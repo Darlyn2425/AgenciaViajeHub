@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cotización de Viaje – Brianessa Travel</title>
+  <link rel="stylesheet" href="stylec.css" />
+</head>
+<body>
+  <!-- Editor (NO se imprime) -->
+  <header class="topbar no-print">
+    <div class="topbar__left">
+      <strong>Editor de Cotización</strong>
+      <span class="muted">Llena los campos y luego imprime/guarda en PDF.</span>
+    </div>
+    <div class="topbar__right">
+      <button class="btn" id="btnSave">Guardar</button>
+      <button class="btn btn--ghost" id="btnLoad">Cargar</button>
+      <button class="btn" id="btnSaveAs">Guardar como</button>
+      <button class="btn btn--ghost" id="btnQuotes">Mis cotizaciones</button>
+      <button class="btn btn--ghost" id="btnWhatsApp">Copiar WhatsApp</button>
+      <button class="btn btn--primary" id="btnPrint">Imprimir / PDF</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="editor no-print" aria-label="Formulario">
+      <h2>Datos del viaje</h2>
+      <div class="grid2">
+        <label>Destino
+          <input id="fDestino" placeholder="Oahu, Hawái" />
+        </label>
+        <label>Fecha (arriba derecha)
+          <input id="fFechaDoc" placeholder="25/01/2026" />
+        </label>
+      </div>
+
+      <div class="grid4">
+        <label>Fechas (chip)
+          <input id="fFechas" placeholder="4 al 8 de junio" />
+        </label>
+        <label>Duración (chip)
+          <input id="fDuracion" placeholder="4 noches" />
+        </label>
+        <label>Adultos
+          <input id="fAdultos" placeholder="0" />
+        </label>
+        <label>Niños
+          <input id="fNinos" placeholder="0" />
+        </label>
+      </div>
+
+      <label>Pasajeros (texto opcional, si quieres sobrescribir)
+        <input id="fPasajeros" placeholder="Ej: 6 adultos, 1 niño" />
+      </label>
+
+      <h2>Precios</h2>
+      <div class="grid2">
+        <label>Moneda
+          <select id="fMoneda">
+            <option value="USD">USD</option>
+            <option value="DOP">DOP</option>
+          </select>
+        </label>
+        <label>Inversión por persona (auto)
+          <input id="fPrecioPersona" placeholder="0.00" readonly />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Precio por adulto
+          <input id="fPrecioAdulto" placeholder="0.00" />
+        </label>
+        <label>Precio por niño
+          <input id="fPrecioNino" placeholder="0.00" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Total del grupo (auto)
+          <input id="fTotalGrupo" placeholder="0.00" readonly />
+        </label>
+        <label>Depósito (monto)
+          <input id="fDeposito" placeholder="0.00" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Depósito (% opcional)
+          <input id="fDepositoPct" placeholder="Ej: 10" />
+        </label>
+        <label>Nota corta (opcional)
+          <input id="fNotaCorta" placeholder="Ej: Tarifas sujetas a disponibilidad" />
+        </label>
+      </div>
+
+      <label>Nota precios (debajo de precios)
+
+        <textarea id="fNotaPrecios" rows="2">Tarifas sujetas a disponibilidad aérea y hotelera al momento de confirmar.</textarea>
+      </label>
+
+      <h2>Contenido de tarjetas</h2>
+      <details open>
+        <summary><strong>Página 1</strong> (Transporte / Alojamiento / Traslados)</summary>
+        <div class="grid1">
+          <label>Transporte aéreo (viñetas, una por línea)
+            <textarea id="tTransporte" rows="6">Vuelos ida y vuelta desde Estados Unidos.
+Aerolíneas reconocidas.
+Equipaje de mano incluido por pasajero.
+Escalas y horarios coordinados para mayor comodidad.
+Los detalles específicos se entregan al confirmar la reserva.</textarea>
+          </label>
+          <label>Alojamiento (viñetas)
+            <textarea id="tAlojamiento" rows="6">4 noches de hospedaje en el destino.
+Hotel categoría turística superior.
+Ubicación estratégica en zona hotelera.
+Habitaciones privadas para el grupo.
+Nombre del hotel se revela al formalizar la reserva.</textarea>
+          </label>
+          <label>Traslados incluidos (viñetas)
+            <textarea id="tTraslados" rows="6">Traslado privado Aeropuerto → Hotel.
+Traslado privado Hotel → Aeropuerto.
+Coordinación de horarios de recogida.
+Asistencia logística para el grupo.</textarea>
+          </label>
+        </div>
+      </details>
+
+      <details open>
+        <summary><strong>Página 2</strong> (Incluye / No incluye / Condiciones)</summary>
+        <div class="grid1">
+          <label>El paquete incluye (viñetas)
+            <textarea id="tIncluye" rows="8">Boleto aéreo ida y vuelta.
+Alojamiento según noches contratadas.
+Traslados aeropuerto ↔ hotel.
+Gestión de reservas.
+Asistencia antes y durante el viaje.
+Coordinación logística completa.</textarea>
+          </label>
+          <label>No incluye (viñetas)
+            <textarea id="tNoIncluye" rows="8">Excursiones opcionales.
+Equipaje documentado (si aplica).
+Alimentación no especificada.
+Gastos personales.
+Seguro de viaje (recomendado).</textarea>
+          </label>
+          <label>Condiciones (viñetas)
+            <textarea id="tCondiciones" rows="8">Depósito no reembolsable.
+Cambios sujetos a políticas de aerolíneas y hotel.
+Tarifas pueden variar sin previo aviso.
+Se recomienda seguro de viaje.</textarea>
+          </label>
+        </div>
+      </details>
+
+      <h2>Mis cotizaciones</h2>
+      <div class="quotes-panel" id="quotesPanel" hidden>
+        <div class="quotes-panel__row">
+          <input id="qSearch" placeholder="Buscar por destino, fechas o fecha del doc..." />
+          <button class="btn" id="btnNew">Nueva</button>
+        </div>
+        <div class="quotes-list" id="quotesList"></div>
+        <div class="muted" style="font-size:12px;margin-top:10px;">
+          Tip: “Guardar como” para tener varias cotizaciones.
+        </div>
+      </div>
+
+      <h2>Footer</h2>
+      <label>Teléfono
+        <input id="fTel" placeholder="+1 (954) 294-9969" />
+      </label>
+      <label>Correo
+        <input id="fCorreo" placeholder="BrianessaTravel@gmail.com" />
+      </label>
+      <label>Redes (texto)
+        <input id="fRedes" placeholder="Instagram: @brianessa  Facebook: Brianessa Travel" />
+      </label>
+      <label>Sitio web
+        <input id="fWeb" placeholder="www.brianessatravelboutique.com" />
+      </label>
+    </section>
+
+    <!-- Documento (se imprime) -->
+    <section class="doc" aria-label="Documento">
+      <!-- PAGE 1 -->
+      <article class="page">
+        <div class="page__inner">
+          <div class="header">
+            <div class="brand">
+              <img class="brand__logo" src="assets/logo BrianessaTravel.jpg" alt="Brianessa Travel" onerror="this.style.display='none'" />
+              <div class="brand__text">
+                <div class="brand__title"><span data-bind="brandTitle">Brianessa Travel</span> | <span data-bind="brandTagline">Tu agencia de viajes de confianza</span></div>
+              </div>
+            </div>
+            <div class="header__right">
+              <div class="header__date"><span class="muted">Fecha:</span> <span data-bind="fechaDoc"></span></div>
+            </div>
+          </div>
+
+          <hr class="rule" />
+
+          <div class="hero">
+            <div class="hero__left">
+              <div class="pill">Paquete de Viaje</div>
+              <h1 class="title" data-bind="destino">Oahu, Hawái</h1>
+              <div class="chips">
+                <div class="chip">
+                  <div class="chip__label">Fechas</div>
+                  <div class="chip__value" data-bind="fechas">4 al 8 de junio</div>
+                </div>
+                <div class="chip">
+                  <div class="chip__label">Duración</div>
+                  <div class="chip__value" data-bind="duracion">4 noches</div>
+                </div>
+                <div class="chip">
+                  <div class="chip__label">Pasajeros</div>
+                  <div class="chip__value" data-bind="pasajeros">6 adultos</div>
+                </div>
+              </div>
+              <div class="smallnote">*Detalles de hotel y vuelos se entregan al confirmar la reserva.</div>
+            </div>
+
+            <div class="hero__right">
+              <div class="pricebox">
+                <div class="pricebox__top">
+                  <div>
+                    <div class="pricebox__label">Inversión por persona</div>
+                    <div class="pricebox__price"><span data-bind="precioPersona">$0.00</span></div>
+                  </div>
+                  <div class="pill pill--mini" data-bind="moneda">USD</div>
+                </div>
+
+                <div class="pricebox__row">
+                  <span>Total del grupo</span>
+                  <strong data-bind="totalGrupo">$0.00</strong>
+                </div>
+                <div class="pricebox__row">
+                  <span>Depósito para reservar</span>
+                  <strong data-bind="deposito">$0.00</strong>
+                </div>
+
+                <div class="pricebox__note" data-bind="notaPrecios">Tarifas sujetas a disponibilidad aérea y hotelera al momento de confirmar.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="cards">
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">✈️</div>
+                <h3>Transporte<br/>Aéreo</h3>
+              </div>
+              <ul class="list" data-list="transporte"></ul>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">🏨</div>
+                <h3>Alojamiento</h3>
+              </div>
+              <ul class="list" data-list="alojamiento"></ul>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">🚐</div>
+                <h3>Traslados<br/>Incluidos</h3>
+              </div>
+              <ul class="list" data-list="traslados"></ul>
+            </div>
+          </div>
+
+          <footer class="footer">
+            <div><strong><span data-bind="brandTitle">Brianessa Travel</span></strong> | <span data-bind="brandTagline">Tu agencia de viajes de confianza</span></div>
+            <div class="footer__row">
+              <span>Teléfono: <strong data-bind="tel">+1 (954) 294-9969</strong></span>
+              <span>Correo electrónico: <strong data-bind="correo">BrianessaTravel@gmail.com</strong></span>
+            </div>
+            <div class="footer__row">
+              <span>Redes sociales: <strong data-bind="redes">Instagram: @brianessa  Facebook: Brianessa Travel</strong></span>
+            </div>
+            <div>Sitio web: <strong data-bind="web">www.brianessatravelboutique.com</strong></div>
+          </footer>
+        </div>
+      </article>
+
+      <!-- PAGE 2 -->
+      <article class="page page--break">
+        <div class="page__inner">
+          <div class="header">
+            <div class="brand">
+              <img class="brand__logo" src="assets/logo BrianessaTravel.jpg" alt="Brianessa Travel" onerror="this.style.display='none'" />
+              <div class="brand__text">
+                <div class="brand__title"><span data-bind="brandTitle">Brianessa Travel</span> | <span data-bind="brandTagline">Tu agencia de viajes de confianza</span></div>
+              </div>
+            </div>
+            <div class="header__right">
+              <div class="header__date"><span class="muted">Fecha:</span> <span data-bind="fechaDoc">25/01/2026</span></div>
+            </div>
+          </div>
+
+          <hr class="rule" />
+
+          <div class="cards">
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">📦</div>
+                <h3>El paquete<br/>incluye</h3>
+              </div>
+              <ul class="list" data-list="incluye"></ul>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">❌</div>
+                <h3>No incluye</h3>
+              </div>
+              <ul class="list" data-list="noIncluye"></ul>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="icon">📄</div>
+                <h3>Condiciones</h3>
+              </div>
+              <ul class="list" data-list="condiciones"></ul>
+            </div>
+          </div>
+
+          <footer class="footer">
+            <div><strong><span data-bind="brandTitle">Brianessa Travel</span></strong> | <span data-bind="brandTagline">Tu agencia de viajes de confianza</span></div>
+            <div class="footer__row">
+              <span>Teléfono: <strong data-bind="tel">+1 (954) 294-9969</strong></span>
+              <span>Correo electrónico: <strong data-bind="correo">BrianessaTravel@gmail.com</strong></span>
+            </div>
+            <div class="footer__row">
+              <span>Redes sociales: <strong data-bind="redes">Instagram: @brianessa  Facebook: Brianessa Travel</strong></span>
+            </div>
+            <div>Sitio web: <strong data-bind="web">www.brianessatravelboutique.com</strong></div>
+          </footer>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script src="appc.js"></script>
+</body>
+</html>
