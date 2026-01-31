@@ -1,0 +1,662 @@
+import { state, saveState } from "../core/state.js";
+import { setContent, renderModuleToolbar, openModal, closeModal, icon, toast } from "../utils/ui.js";
+import { escapeHtml, matchesSearch, uid, parseNum, round2, toMoney, formatDateLongISO, buildScheduleDates, splitInstallments, ordinalPago } from "../utils/helpers.js";
+import { PDF_FOOTER_IMG } from "../utils/constants.js";
+
+// Make functions available globally for inline onclick handlers
+window.exportPaymentPlanPDF = exportPaymentPlanPDF;
+window.editPaymentPlan = editPaymentPlan;
+window.deletePaymentPlan = deletePaymentPlan;
+window.viewPaymentPlan = viewPaymentPlan;
+window.attachPaymentPlan = attachPaymentPlan;
+window.openPaymentPlanModal = openPaymentPlanModal;
+window.generateAndAttachPaymentPlanPDF = generateAndAttachPaymentPlanPDF;
+window.previewPaymentPlanAttachment = previewPaymentPlanAttachment;
+window.downloadPaymentPlanAttachment = downloadPaymentPlanAttachment;
+window.removePaymentPlanAttachment = removePaymentPlanAttachment;
+window.togglePlanMenu = togglePlanMenu;
+
+export function renderPaymentPlans(searchTerm = "") {
+    const rows = state.paymentPlans.filter(p => matchesSearch(p, searchTerm)).map(p => {
+        const hasPdf = !!p.attachmentPdf;
+        const pdfBadge = hasPdf ? `<span class="badge pdf" title="Tiene PDF adjunto">PDF</span>` : ``;
+
+        const menuItems = `
+      <button class="menu-item" onclick="window.exportPaymentPlanPDF('${p.id}')">
+        <span class="mi-ic">${icon('download')}</span>
+        <span class="mi-tx">Descargar plan (PDF)</span>
+      </button>
+      <button class="menu-item" onclick="window.generateAndAttachPaymentPlanPDF('${p.id}')">
+        <span class="mi-ic">${icon('paperclip')}</span>
+        <span class="mi-tx">Generar y adjuntar PDF</span>
+      </button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" onclick="window.attachPaymentPlan('${p.id}')">
+        <span class="mi-ic">${icon('paperclip')}</span>
+        <span class="mi-tx">Adjuntar PDF</span>
+      </button>
+      ${hasPdf ? `
+        <div class="menu-sep"></div>
+        <button class="menu-item" onclick="window.previewPaymentPlanAttachment('${p.id}')">
+          <span class="mi-ic">${icon('eye')}</span>
+          <span class="mi-tx">Ver PDF adjunto</span>
+        </button>
+        <button class="menu-item" onclick="window.downloadPaymentPlanAttachment('${p.id}')">
+          <span class="mi-ic">${icon('download')}</span>
+          <span class="mi-tx">Descargar PDF adjunto</span>
+        </button>
+        <button class="menu-item danger" onclick="window.removePaymentPlanAttachment('${p.id}')">
+          <span class="mi-ic">${icon('x')}</span>
+          <span class="mi-tx">Quitar PDF adjunto</span>
+        </button>
+      ` : ``}
+      <div class="menu-sep"></div>
+      <button class="menu-item danger" onclick="window.deletePaymentPlan('${p.id}')">
+        <span class="mi-ic">${icon('trash')}</span>
+        <span class="mi-tx">Eliminar plan</span>
+      </button>
+    `;
+
+        return `
+      <tr>
+        <td>
+          <div class="plan-cell">
+            <div class="plan-main">
+              <strong>${escapeHtml(p.clientName || p.clientDisplay || "Plan")}</strong>
+              ${pdfBadge}
+            </div>
+            <div class="kbd">${escapeHtml(p.tripName || p.tripDisplay || "")}</div>
+          </div>
+        </td>
+        <td>${escapeHtml(p.currency || state.settings.currencyDefault)}</td>
+        <td>${escapeHtml(p.startDate || "")}</td>
+        <td>
+          <div class="actions compact">
+            <button class="icon-btn" onclick="window.viewPaymentPlan('${p.id}')">${icon('eye')}</button>
+            <button class="icon-btn" onclick="window.editPaymentPlan('${p.id}')">${icon('edit')}</button>
+
+            <div class="action-menu" data-menu="${p.id}">
+              <button class="icon-btn" onclick="window.togglePlanMenu(event,'${p.id}')">${icon('dots')}</button>
+              <div class="menu-pop" id="plan-menu-${p.id}" hidden>
+                ${menuItems}
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
+    }).join("");
+
+    setContent(`
+    <div class="card">
+      ${renderModuleToolbar("paymentPlans",
+        `<div><h2 style="margin:0;">Planes de pago</h2><div class="kbd">Tú das lo principal y se calcula todo (cuotas/fechas/recargo).</div></div>`,
+        `<button class="btn primary" onclick="window.openPaymentPlanModal()">+ Nuevo plan</button>`
+    )}
+      <hr/>
+      <table class="table">
+        <thead><tr><th>Plan</th><th>Moneda</th><th>Inicio</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay planes todavía.</td></tr>`}</tbody>
+      </table>
+    </div>
+  `);
+}
+
+export function openPaymentPlanModal(existing = null) {
+    const clientOptions = state.clients.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+    const tripOptions = state.trips.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
+
+    openModal({
+        title: existing ? "Editar plan de pago" : "Nuevo plan de pago",
+        bodyHtml: `
+      <div class="grid">
+        <div class="field col-6">
+          <label>Cliente (opcional si no está creado)</label>
+          <select id="pClient"><option value="">(Sin seleccionar)</option>${clientOptions}</select>
+        </div>
+        <div class="field col-6">
+          <label>Nombre del cliente (si no usas el select)</label>
+          <input id="pClientDisplay" value="${escapeHtml(existing?.clientDisplay || "")}" placeholder="Ej: Diana Marquez" />
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field col-6">
+          <label>Viaje (opcional si no está creado)</label>
+          <select id="pTrip"><option value="">(Sin seleccionar)</option>${tripOptions}</select>
+        </div>
+        <div class="field col-6">
+          <label>Nombre del viaje (si no usas el select)</label>
+          <input id="pTripDisplay" value="${escapeHtml(existing?.tripDisplay || "")}" placeholder="Ej: Dubai con Richard Santos (Escala Dubai)" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Mensaje adicional (opcional)</label>
+        <input id="pExtra" value="${escapeHtml(existing?.extra || "")}" placeholder="Ej: con Richard Santos (ESCALA DUBAI)" />
+      </div>
+
+      <div class="grid">
+        <div class="field col-4">
+          <label>Moneda</label>
+          <select id="pCurrency">
+            <option value="USD">USD</option>
+            <option value="DOP">DOP</option>
+          </select>
+        </div>
+        <div class="field col-4"><label>Monto total</label><input id="pTotal" value="${escapeHtml(existing?.total || "")}" placeholder="Ej: 3797" /></div>
+        <div class="field col-4"><label>Descuento</label><input id="pDiscount" value="${escapeHtml(existing?.discount || "0")}" placeholder="Ej: 300" /></div>
+      </div>
+
+      <div class="grid">
+        <div class="field col-4"><label>Reserva pagada</label><input id="pDeposit" value="${escapeHtml(existing?.deposit || "0")}" placeholder="Ej: 250" /></div>
+        <div class="field col-4">
+          <label>Frecuencia</label>
+          <select id="pFreq"><option>Mensual</option><option>Quincenal</option></select>
+        </div>
+        <div class="field col-4">
+          <label>Forma de pago</label>
+          <select id="pMethod"><option>Transferencia</option><option>Tarjeta</option></select>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="field col-6"><label>Fecha inicio</label><input id="pStart" type="date" value="${escapeHtml(existing?.startDate || "")}" /></div>
+        <div class="field col-6"><label>Fecha fin</label><input id="pEnd" type="date" value="${escapeHtml(existing?.endDate || "")}" /></div>
+      </div>
+
+      <div class="field">
+        <label>Link de pago</label>
+        <input id="pLink" value="${escapeHtml(existing?.paymentLink || "")}" placeholder="Pega tu link aquí" />
+      </div>
+
+      <div class="row">
+        <button class="btn" id="pGenerate">Generar texto (formato PDF)</button>
+        <span class="kbd">Usa el estilo de tu PDF de Dubái.</span>
+      </div>
+
+      <div class="field">
+        <label>Texto generado</label>
+        <textarea id="pText" placeholder="Aquí sale el documento...">${escapeHtml(existing?.text || "")}</textarea>
+      </div>
+    `,
+        onSave: () => {
+            const clientId = document.getElementById("pClient").value || "";
+            const tripId = document.getElementById("pTrip").value || "";
+            const clientObj = state.clients.find(c => c.id === clientId);
+            const tripObj = state.trips.find(t => t.id === tripId);
+
+            const clientDisplay = document.getElementById("pClientDisplay").value.trim();
+            const tripDisplay = document.getElementById("pTripDisplay").value.trim();
+            const extra = document.getElementById("pExtra").value.trim();
+            const currency = document.getElementById("pCurrency").value;
+            const total = parseNum(document.getElementById("pTotal").value);
+            const discount = parseNum(document.getElementById("pDiscount").value);
+            const deposit = parseNum(document.getElementById("pDeposit").value);
+            const freq = document.getElementById("pFreq").value;
+            const method = document.getElementById("pMethod").value;
+            const startDate = document.getElementById("pStart").value || "";
+            const endDate = document.getElementById("pEnd").value || "";
+            const paymentLink = document.getElementById("pLink").value.trim();
+            const text = document.getElementById("pText").value.trim();
+
+            const payload = {
+                id: existing?.id || uid("pay"),
+                clientId,
+                tripId,
+                clientName: clientObj?.name || "",
+                tripName: tripObj?.name || "",
+                clientDisplay,
+                tripDisplay,
+                extra,
+                currency,
+                total,
+                discount,
+                deposit,
+                freq,
+                method,
+                startDate,
+                endDate,
+                paymentLink,
+                text,
+                updatedAt: new Date().toLocaleString(state.settings.locale),
+            };
+
+            if (existing) Object.assign(existing, payload);
+            else state.paymentPlans.push(payload);
+
+            saveState();
+            closeModal();
+            if (window.render) window.render();
+        }
+    });
+
+    if (existing) {
+        if (existing.clientId) document.getElementById("pClient").value = existing.clientId;
+        if (existing.tripId) document.getElementById("pTrip").value = existing.tripId;
+        if (existing.currency) document.getElementById("pCurrency").value = existing.currency;
+        if (existing.freq) document.getElementById("pFreq").value = existing.freq;
+        if (existing.method) document.getElementById("pMethod").value = existing.method;
+    }
+
+    document.getElementById("pGenerate").onclick = () => {
+        const s = state.settings;
+        const clientSel = document.getElementById("pClient").value || "";
+        const tripSel = document.getElementById("pTrip").value || "";
+        const clientObj = state.clients.find(c => c.id === clientSel);
+        const tripObj = state.trips.find(t => t.id === tripSel);
+
+        const cliente = (clientObj?.name || document.getElementById("pClientDisplay").value.trim() || "Cliente");
+        const viaje = (tripObj?.name || document.getElementById("pTripDisplay").value.trim() || "Viaje");
+        const extra = document.getElementById("pExtra").value.trim();
+        const currency = document.getElementById("pCurrency").value;
+
+        const total = parseNum(document.getElementById("pTotal").value);
+        const descuento = parseNum(document.getElementById("pDiscount").value);
+        const reserva = parseNum(document.getElementById("pDeposit").value);
+        const freq = document.getElementById("pFreq").value;
+        const method = document.getElementById("pMethod").value;
+        const startISO = document.getElementById("pStart").value || "";
+        const endISO = document.getElementById("pEnd").value || "";
+        const link = document.getElementById("pLink").value.trim();
+
+        const totalDesc = round2(total - descuento);
+        const restante = round2(totalDesc - reserva);
+
+        const dates = buildScheduleDates({ startISO, endISO, frequency: freq });
+        const cuotas = dates.length || 0;
+        const montos = cuotas ? splitInstallments(restante, cuotas) : [];
+        const montoCuotaBase = cuotas ? montos[0] : 0;
+
+        const feePct = Number(s.cardFeePct || 3.5);
+        const montoCuotaTarjeta = round2(montoCuotaBase * (1 + (feePct / 100)));
+
+        const titulo = `Plan de Pagos Para el Viaje a ${viaje}${extra ? "\n(" + extra + ")" : ""}`;
+
+        let out = "";
+        out += `${s.companyName}\n`;
+        out += `Teléfono: ${s.phone} | Correo electrónico: ${s.email}\n`;
+        out += `Redes sociales: Instagram: ${s.instagram} | Facebook: ${s.facebook}\n`;
+        out += `Sitio web: ${s.website}\n\n`;
+
+        out += `${titulo}\n\n`;
+        out += `Estimada, ${cliente}:\n`;
+        out += `Nos complace proporcionarle las opciones de pago personalizadas para completar el monto pendiente de su viaje a ${viaje}${extra ? " " + extra : ""}. Este documento incluye detalles claros y flexibles para su planificación.\n\n`;
+
+        out += `Datos del Cliente\n`;
+        out += `• Nombre del Cliente: ${cliente}\n`;
+        out += `• Monto Total del Viaje: ${toMoney(total, currency)}\n`;
+        out += `• Descuento aplicado: ${toMoney(descuento, currency)}\n`;
+        out += `• Monto con Descuento: ${toMoney(totalDesc, currency)}\n`;
+        out += `• Monto de Reservación: ${toMoney(reserva, currency)} (ya pagado)\n`;
+        out += `• Monto Total Original Restante: ${toMoney(restante, currency)}\n`;
+        out += `• Monto Pendiente Final: ${toMoney(restante, currency)}\n`;
+        out += `• Fecha de Inicio de Pago: ${formatDateLongISO(startISO)}\n`;
+        out += `• Fecha Final de Pago: ${formatDateLongISO(endISO)}\n\n`;
+
+        out += `Modalidades de Pago ${freq}\n`;
+        out += `• Cantidad de Cuotas: ${cuotas}\n`;
+        out += `• Monto por Cuota: ${toMoney(montoCuotaBase, currency)}\n`;
+
+        out += `• Fechas de Pago:\n`;
+        dates.forEach((d, i) => {
+            out += `o ${ordinalPago(i)} pago: ${formatDateLongISO(d)}\n`;
+        });
+
+        out += `\n👉 Realiza tus pagos aquí\n${link || "(pendiente de link)"}\n\n`;
+
+        if (method === "Tarjeta") {
+            out += `Nota Importante\n`;
+            out += `Costo Adicional: El monto por cuota es de ${toMoney(montoCuotaTarjeta, currency)} debido a un cargo adicional de ${feePct}% por el uso de tarjeta de crédito/débito. Este cargo cubre los costos de procesamiento y es una tarifa estándar para pagos con tarjeta.\n`;
+            out += `Fechas específicas: Las fechas indicadas son las programadas para sus pagos según la modalidad seleccionada. Si necesita realizar algún ajuste, contáctenos a la brevedad.\n`;
+            out += `Atención personalizada: Nuestro equipo está a su disposición para aclarar cualquier duda o atender cualquier necesidad adicional.\n`;
+        }
+
+        document.getElementById("pText").value = out;
+    };
+}
+
+export function editPaymentPlan(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p) { toast("No encontré ese plan."); return; }
+    openPaymentPlanModal(p);
+}
+
+export function deletePaymentPlan(id) {
+    state.paymentPlans = state.paymentPlans.filter(x => x.id !== id);
+    saveState();
+    if (window.render) window.render();
+}
+
+export function viewPaymentPlan(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p) return;
+    openModal({
+        title: "Ver plan de pago",
+        bodyHtml: `
+      <div class="card">
+        <div class="row">
+          <div>
+            <strong>${escapeHtml(p.clientName || p.clientDisplay || "Plan de Pago")}</strong>
+            <div class="kbd">${escapeHtml(p.tripName || p.tripDisplay || "")}</div>
+          </div>
+          <span class="badge">${escapeHtml(p.currency || "")}</span>
+        </div>
+        <hr/>
+        <div class="field"><label>Texto</label><textarea readonly>${escapeHtml(p.text || "")}</textarea></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button class="btn" id="copyPlan">Copiar</button>
+        </div>
+      </div>
+    `,
+        onSave: () => closeModal()
+    });
+    document.getElementById("copyPlan").onclick = () => navigator.clipboard.writeText(p.text || "");
+}
+
+export function togglePlanMenu(ev, id) {
+    ev.stopPropagation();
+    window.closeAllDropdowns && window.closeAllDropdowns();
+
+    // hide all other plan menus first
+    document.querySelectorAll(".menu-pop").forEach(el => el.hidden = true);
+
+    const menu = document.getElementById(`plan-menu-${id}`);
+    if (menu) {
+        menu.hidden = !menu.hidden;
+    }
+}
+
+// Ensure clicking outside closes menus
+document.addEventListener("click", (e) => {
+    if (!e.target.closest(".action-menu")) {
+        document.querySelectorAll(".menu-pop").forEach(el => el.hidden = true);
+    }
+});
+
+// PDF Generation Logic (Keep it here or move to pdfHelpers.js, but keeping here for cohesion as per original)
+
+export function buildPaymentPlanPdfHTML(p) {
+    const s = state.settings;
+    const cliente = (p.clientName || p.clientDisplay || "Cliente");
+    const viaje = (p.tripName || p.tripDisplay || "Viaje");
+    const extra = p.extra || "";
+    const currency = p.currency || "USD";
+    const startISO = p.startDate;
+    const endISO = p.endDate;
+    const total = p.total || 0;
+    const descuento = p.discount || 0;
+    const reserva = p.deposit || 0;
+    const freq = p.freq || "Mensual";
+    const method = p.method || "Transferencia";
+    const link = p.paymentLink || "";
+
+    const totalDesc = round2(total - descuento);
+    const restante = round2(totalDesc - reserva);
+
+    const dates = buildScheduleDates({ startISO, endISO, frequency: freq });
+    const cuotas = dates.length || 0;
+    const montos = cuotas ? splitInstallments(restante, cuotas) : [];
+
+    const montoCuotaBase = cuotas ? montos[0] : 0;
+    const feePct = Number(s.cardFeePct || 0);
+    const montoCuotaTarjeta = round2(montoCuotaBase * (1 + (feePct / 100)));
+
+    const titulo = `Plan de Pagos Para el Viaje a ${escapeHtml(viaje)}${extra ? " " + escapeHtml(extra) : ""}`;
+    const fechaGen = new Date().toLocaleDateString(s.locale);
+
+    const kv = (k, v) => `<tr class="pdf-tr"><td class="pdf-k">${k}</td><td class="pdf-v">${v}</td></tr>`;
+
+    let fechasListHtml = "";
+    dates.forEach((d, i) => {
+        fechasListHtml += `<li class="pdf-li"><span class="pdf-li-n">${ordinalPago(i)} pago:</span> <span class="pdf-li-d">${formatDateLongISO(d)}</span></li>`;
+    });
+
+    const isLongSchedule = dates.length > 8;
+
+    let notaTarjeta = "";
+    if (method === "Tarjeta") {
+        notaTarjeta = `
+      <div class="pdf-note-box">
+        <div class="pdf-note-title">Nota Importante</div>
+        <p><strong>Costo Adicional:</strong> El monto por cuota es de <strong>${escapeHtml(toMoney(montoCuotaTarjeta, currency))}</strong> debido a un cargo adicional de <strong>${feePct}%</strong> por el uso de tarjeta de crédito/débito. Este cargo cubre los costos de procesamiento.</p>
+        <p><strong>Fechas específicas:</strong> Las fechas indicadas son las programadas para sus pagos. Si necesita realizar algún ajuste, contáctenos a la brevedad.</p>
+        <p><strong>Atención personalizada:</strong> Nuestro equipo está a su disposición para aclarar cualquier duda.</p>
+      </div>
+    `;
+    }
+
+    const logoImg = s.logoDataUrl || ""; // Or define default logo if needed
+    const logoHtml = logoImg ? `<img src="${logoImg}" class="pdf-logo" alt="logo" />` : `<div class="pdf-logo-text">${escapeHtml(s.companyName)}</div>`;
+
+    const brandLine = escapeHtml(s.companyName);
+    const subLine = "Travel & Concierge Services";
+
+    // CSS for PDF (inline)
+    // We rely on the global CSS or specific PDF css injected by html2pdf if needed.
+    // But here we construct HTML to be printed.
+
+    return `
+  <div class="pdf-page">
+    <div class="pdf-header">
+      <div class="pdf-header-left">
+        ${logoHtml}
+        <div class="pdf-headtext">
+          <div class="pdf-brand">${brandLine}</div>
+          <div class="pdf-subbrand">${subLine}</div>
+        </div>
+      </div>
+      <div class="pdf-meta-top">
+        <div class="pdf-date">Fecha: ${escapeHtml(fechaGen)}</div>
+      </div>
+    </div>
+
+    <div class="pdf-title">${titulo}</div>
+
+    <div class="pdf-body">
+      <div class="pdf-intro">
+        <b>Estimada, ${escapeHtml(cliente)}:</b><br/>
+        Nos complace proporcionarle las opciones de pago personalizadas para completar el monto pendiente de su viaje a ${escapeHtml(viaje)}${extra ? " " + escapeHtml(extra) : ""}. Este documento incluye detalles claros y flexibles para su planificación.
+      </div>
+
+      <div class="pdf-grid${isLongSchedule ? " onecol" : ""}">
+        <div class="pdf-card client-card">
+          <div class="pdf-card-title">Datos del Cliente</div>
+          <table class="pdf-kv">
+            ${kv("Nombre del Cliente", escapeHtml(cliente))}
+            ${kv("Viaje", escapeHtml(viaje))}
+            ${kv("Monto Total del Viaje", escapeHtml(toMoney(total, currency)))}
+            ${kv("Descuento aplicado", escapeHtml(toMoney(descuento, currency)))}
+            ${kv("Monto con Descuento", escapeHtml(toMoney(totalDesc, currency)))}
+            ${kv("Monto de Reservación", escapeHtml(toMoney(reserva, currency)) + " (ya pagado)")}
+            ${kv("Monto Total Original Restante", escapeHtml(toMoney(restante, currency)))}
+            ${kv("Monto Pendiente Final", escapeHtml(toMoney(restante, currency)))}
+            ${kv("Fecha de Inicio de Pago", escapeHtml(formatDateLongISO(startISO)))}
+            ${kv("Fecha Final de Pago", escapeHtml(formatDateLongISO(endISO)))}
+          </table>
+        </div>
+
+        <div class="pdf-card pay-card">
+          <div class="pdf-card-title">Modalidades de Pago ${escapeHtml(freq)}</div>
+          <table class="pdf-kv">
+            ${kv("Cantidad de Cuotas", escapeHtml(String(cuotas)))}
+            ${kv("Monto por Cuota", `${escapeHtml(toMoney(montoCuotaBase, currency))}`)}
+          </table>
+
+          <div class="pdf-subtitle" style="margin-top:10px; font-size:13px; font-weight:900;">Fechas de Pago</div>
+          <ul class="pdf-list">
+            ${fechasListHtml}
+          </ul>
+
+          <div class="pdf-paylink">
+            <div class="pdf-paylink-title">👉 Realiza tus pagos aquí</div>
+            <div class="pdf-paylink-url">${escapeHtml(link || "(pendiente de link)")}</div>
+          </div>
+        </div>
+      </div>
+
+      ${notaTarjeta}
+    </div>
+
+    <div class="pdf-footer">
+      ${PDF_FOOTER_IMG ? `<img src="${PDF_FOOTER_IMG}" alt="footer" />` : ``}
+    </div>
+  </div>
+  `;
+}
+
+export function exportPaymentPlanPDF(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p) { toast("No encontré ese plan."); return; }
+
+    try {
+        if (window.html2pdf) {
+            const root = document.getElementById("pdf-root");
+            if (!root) { toast("Falta el contenedor #pdf-root."); return; }
+
+            // We need styles for PDF. They are usually common.html or similar. 
+            // Assuming they are in CSS or we inject them?
+            // Since we are refactoring, we rely on the main CSS being available or we should inject specific styles.
+            // For now, assume global styles cover it or we need to extract them.
+
+            root.innerHTML = buildPaymentPlanPdfHTML(p);
+            const element = root.firstElementChild;
+
+            const safeClient = (p.clientName || p.clientDisplay || "plan").toString().trim().replace(/[^\\w\\-]+/g, "_");
+            const filename = `PlanPago_${safeClient}.pdf`;
+
+            const opt = {
+                margin: [18, 18, 18, 18],
+                filename: filename,
+                image: { type: "jpeg", quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+                jsPDF: { unit: "pt", format: "a4", orientation: "portrait" },
+                pagebreak: { mode: ["css", "legacy"] }
+            };
+
+            html2pdf().set(opt).from(element).save()
+                .then(() => { root.innerHTML = ""; })
+                .catch((e) => {
+                    console.error("html2pdf error:", e);
+                    root.innerHTML = "";
+                    toast("No pude generar el PDF. Revisa la consola.");
+                    // Fallback (text only)
+                    exportPaymentPlanPDF_fallback(p);
+                });
+        } else {
+            exportPaymentPlanPDF_fallback(p);
+        }
+    } catch (e) {
+        console.error(e);
+        exportPaymentPlanPDF_fallback(p);
+    }
+}
+
+function exportPaymentPlanPDF_fallback(p) {
+    let text = (p.text || "").trim();
+    if (!text) {
+        text = `Plan de pago para ${p.clientName || "Cliente"}\nTotal: ${p.total}`;
+    }
+    if (window.jspdf && window.jspdf.jsPDF) {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        doc.text(text, 10, 10);
+        doc.save("PlanPago.pdf");
+    } else {
+        alert("No se puede generar PDF (librerías faltantes).");
+    }
+}
+
+export function attachPaymentPlan(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p) { toast("No encontré ese plan."); return; }
+
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf";
+    input.onchange = (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        if (!file) return;
+        if (file.type !== "application/pdf") { toast("Solo PDF."); return; }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            p.attachmentPdf = {
+                name: file.name || "plan_pago.pdf",
+                type: file.type,
+                size: file.size,
+                dataUrl: reader.result,
+                attachedAt: new Date().toISOString()
+            };
+            saveState();
+            if (window.render) window.render();
+            toast("PDF adjuntado ✅");
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
+}
+
+export function generateAndAttachPaymentPlanPDF(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p) { toast("No encontré ese plan."); return; }
+
+    if (!window.html2pdf) { toast("No tengo librería PDF."); return; }
+
+    const root = document.getElementById("pdf-root");
+    root.innerHTML = buildPaymentPlanPdfHTML(p);
+    const element = root.firstElementChild;
+
+    const opt = {
+        margin: [18, 18, 18, 18],
+        filename: "temp.pdf",
+        image: { type: "jpeg", quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+        jsPDF: { unit: "pt", format: "a4", orientation: "portrait" }
+    };
+
+    html2pdf().set(opt).from(element).outputPdf('datauristring')
+        .then((pdfAsString) => {
+            p.attachmentPdf = {
+                name: `Plan_${p.clientName || "pago"}.pdf`,
+                type: "application/pdf",
+                size: pdfAsString.length, // approximation
+                dataUrl: pdfAsString,
+                attachedAt: new Date().toISOString()
+            };
+            saveState();
+            root.innerHTML = "";
+            if (window.render) window.render();
+            toast("PDF generado y adjuntado ✅");
+        })
+        .catch(err => {
+            console.error(err);
+            root.innerHTML = "";
+            toast("Error generando PDF interno.");
+        });
+}
+
+export function previewPaymentPlanAttachment(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p || !p.attachmentPdf) return;
+    const win = window.open("");
+    win.document.write(`<iframe src="${p.attachmentPdf.dataUrl}" style="width:100%;height:100vh;border:0;"></iframe>`);
+}
+
+export function downloadPaymentPlanAttachment(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (!p || !p.attachmentPdf) return;
+    const a = document.createElement("a");
+    a.href = p.attachmentPdf.dataUrl;
+    a.download = p.attachmentPdf.name;
+    a.click();
+}
+
+export function removePaymentPlanAttachment(id) {
+    const p = state.paymentPlans.find(x => x.id === id);
+    if (p) {
+        p.attachmentPdf = null;
+        saveState();
+        if (window.render) window.render();
+    }
+}

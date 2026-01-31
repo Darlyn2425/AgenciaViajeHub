@@ -1,5 +1,8 @@
 const STORAGE_KEY = "bt_hub_v2";
 
+import dotenv from "dotenv";
+dotenv.config();
+
 const state = loadState();
 
 const routes = {
