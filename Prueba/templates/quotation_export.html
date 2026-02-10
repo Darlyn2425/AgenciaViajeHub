@@ -1,0 +1,171 @@
+<div class="doc" style="width: 210mm; margin: 0 auto;">
+    <!-- PAGE 1 -->
+    <div class="page">
+        <div class="page__inner">
+            <div class="header">
+                <div class="brand">
+                    {{brandLogo}}
+                    <div class="brand__text">
+                        <div class="brand__title"><span>{{companyName}}</span> | <span>Tu agencia de viajes de
+                                confianza</span></div>
+                    </div>
+                </div>
+                <div class="header__right">
+                    <div class="header__date"><span class="muted">Fecha:</span> <span>{{docDate}}</span></div>
+                </div>
+            </div>
+
+            <hr class="rule" />
+
+            <div class="hero">
+                <div class="hero__left">
+                    <div class="pill">Paquete de Viaje</div>
+                    <h1 class="title">{{destination}}</h1>
+                    <div class="chips">
+                        <div class="chip">
+                            <div class="chip__label">Fechas</div>
+                            <div class="chip__value">{{datesText}}</div>
+                        </div>
+                        <div class="chip">
+                            <div class="chip__label">Duración</div>
+                            <div class="chip__value">{{duration}}</div>
+                        </div>
+                        <div class="chip">
+                            <div class="chip__label">Pasajeros</div>
+                            <div class="chip__value">{{paxText}}</div>
+                        </div>
+                    </div>
+                    <div class="smallnote">*Detalles de hotel y vuelos se entregan al confirmar la reserva.</div>
+                </div>
+
+                <div class="hero__right">
+                    <div class="pricebox">
+                        <div class="pricebox__top">
+                            <div>
+                                <div class="pricebox__label">Inversión por persona</div>
+                                <div class="pricebox__price"><span>{{pricePerPerson}}</span></div>
+                            </div>
+                            <div class="pill pill--mini">{{currency}}</div>
+                        </div>
+
+                        <div class="pricebox__bottom">
+                            <div class="pricebox__row">
+                                <span>Total del grupo</span>
+                                <strong>{{total}}</strong>
+                            </div>
+                            <div class="pricebox__row" style="{{depositStyle}}">
+                                <span>Depósito para reservar</span>
+                                <strong>{{deposit}}</strong>
+                            </div>
+
+                            <div class="pricebox__note">{{priceNote}}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="cards">
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">✈️</div>
+                        <h3>Transporte<br />Aéreo</h3>
+                    </div>
+                    <ul class="list">{{tTransport}}</ul>
+                </div>
+
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">🏨</div>
+                        <h3>Alojamiento</h3>
+                    </div>
+                    <ul class="list">{{tLodging}}</ul>
+                </div>
+
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">🚐</div>
+                        <h3>Traslados<br />Incluidos</h3>
+                    </div>
+                    <ul class="list">{{tTransfers}}</ul>
+                </div>
+            </div>
+
+            <footer class="footer">
+                <div class="footer__brand"><strong><span>{{companyName}}</span></strong> | <span>Tu agencia de viajes de
+                        confianza</span></div>
+                <div class="footer__row">
+                    <span>Teléfono: <strong>{{phone}}</strong></span>
+                    <span>Correo electrónico: <strong>{{email}}</strong></span>
+                </div>
+                <div class="footer__row">
+                    <span>Redes sociales: <strong>Instagram: @brianessa Facebook: Brianessa Travel</strong></span>
+                </div>
+                <div>Sitio web: <strong>{{website}}</strong></div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- PAGE 2 -->
+    <div class="page page--break" style="margin-top: 20px;">
+        <div class="page__inner">
+            <div class="header">
+                <div class="brand">
+                    {{brandLogo}}
+                    <div class="brand__text">
+                        <div class="brand__title"><span>{{companyName}}</span> | <span>Tu agencia de viajes de
+                                confianza</span></div>
+                    </div>
+                </div>
+                <div class="header__right">
+                    <div class="header__date"><span class="muted">Fecha:</span> <span>{{docDate}}</span></div>
+                </div>
+            </div>
+
+            <hr class="rule" />
+
+            <!-- GALLERY SECTION (Exact match) -->
+            <div class="gallery" id="docGallery" {{galleryHidden}}>
+                {{galleryImages}}
+            </div>
+
+            <div class="cards">
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">📦</div>
+                        <h3>El paquete<br />incluye</h3>
+                    </div>
+                    <ul class="list">{{tInc}}</ul>
+                </div>
+
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">❌</div>
+                        <h3>No incluye</h3>
+                    </div>
+                    <ul class="list">{{tNotInc}}</ul>
+                </div>
+
+                <div class="card">
+                    <div class="card__head">
+                        <div class="icon">📄</div>
+                        <h3>Condiciones</h3>
+                    </div>
+                    <ul class="list">{{tCond}}</ul>
+                </div>
+            </div>
+
+            <footer class="footer">
+                <div class="footer__brand"><strong><span>{{companyName}}</span></strong> | <span>Tu agencia de viajes de
+                        confianza</span></div>
+                <div class="footer__row">
+                    <span>Teléfono: <strong>{{phone}}</strong></span>
+                    <span>Correo electrónico: <strong>{{email}}</strong></span>
+                </div>
+                <div class="footer__row">
+                    <span>Redes sociales: <strong>Instagram: @brianessa Facebook: Brianessa Travel</strong></span>
+                </div>
+                <div>Sitio web: <strong>{{website}}</strong></div>
+            </footer>
+        </div>
+    </div>
+</div>

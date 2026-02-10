@@ -1,12 +1,13 @@
 import { state, saveState, loadState } from "./core/state.js";
-import { setRenderCallback, setContent, icon, toast, initModal, openModal, closeModal, escapeHtml } from "./utils/ui.js";
+import { setRenderCallback, setContent, icon, toast, initModal, openModal, closeModal } from "./utils/ui.js";
 
-// Import modules to register window globals and get render functions
+// Import modules
 import { renderDashboard } from "./modules/dashboard.js";
 import { renderClients, openClientModal } from "./modules/clients.js";
 import { renderTrips, openTripModal } from "./modules/trips.js";
 import { renderPaymentPlans, openPaymentPlanModal } from "./modules/paymentPlans.js";
 import { renderItineraries, openItineraryModal } from "./modules/itineraries.js";
+import { renderQuotations, openQuotationModal } from "./modules/quotations.js";
 import { renderCampaigns } from "./modules/campaigns.js";
 import { renderTemplates } from "./modules/templates.js";
 import { renderAI } from "./modules/ai.js";
@@ -15,11 +16,15 @@ import { renderSettings } from "./modules/settings.js";
 let currentRoute = "dashboard";
 let searchTerm = "";
 
+function getSearchInputEl() {
+    return document.getElementById("globalSearch") || document.getElementById("searchInput");
+}
+
 // Global render orchestration
 function render() {
     // Update active sidebar
     document.querySelectorAll(".nav-item").forEach(el => {
-        el.classList.toggle("active", el.dataset.target === currentRoute);
+        el.classList.toggle("active", el.dataset.route === currentRoute);
     });
 
     // Render content based on route
@@ -29,6 +34,7 @@ function render() {
         case "trips": renderTrips(searchTerm); break;
         case "payment-plans": renderPaymentPlans(searchTerm); break;
         case "itineraries": renderItineraries(searchTerm); break;
+        case "quotations": renderQuotations(searchTerm); break;
         case "campaigns": renderCampaigns(); break;
         case "templates": renderTemplates(); break;
         case "ai": renderAI(); break;
@@ -43,6 +49,7 @@ function render() {
         trips: "Viajes / Grupos",
         "payment-plans": "Planes de pago",
         itineraries: "Itinerarios",
+        quotations: "Cotizaciones",
         campaigns: "Campañas",
         templates: "Plantillas",
         ai: "Asistente IA",
@@ -51,8 +58,8 @@ function render() {
     const titleEl = document.getElementById("headerTitle");
     if (titleEl) titleEl.textContent = titles[currentRoute] || "Brianessa Travel";
 
-    // Re-bind global listeners if needed (search input value)
-    const sInput = document.getElementById("searchInput");
+    // Re-bind global listeners if needed
+    const sInput = getSearchInputEl();
     if (sInput && document.activeElement !== sInput) sInput.value = searchTerm;
 }
 
@@ -70,7 +77,7 @@ function navigate(route) {
 
 // Expose navigate globally
 window.navigate = navigate;
-window.render = render; // Allow modules to re-render
+window.render = render;
 
 // Setup UI callbacks
 setRenderCallback(render);
@@ -85,6 +92,7 @@ function openQuickMenu() {
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
           <button class="btn primary" id="qPlan">Plan de pago</button>
           <button class="btn primary" id="qIti">Itinerario</button>
+          <button class="btn primary" id="qQuo">Cotización</button>
           <button class="btn" id="qClient">Cliente</button>
           <button class="btn" id="qTrip">Viaje</button>
         </div>
@@ -95,6 +103,7 @@ function openQuickMenu() {
 
     document.getElementById("qPlan").onclick = () => { closeModal(); navigate("payment-plans"); openPaymentPlanModal(); };
     document.getElementById("qIti").onclick = () => { closeModal(); navigate("itineraries"); openItineraryModal(); };
+    document.getElementById("qQuo").onclick = () => { closeModal(); navigate("quotations"); openQuotationModal(); };
     document.getElementById("qClient").onclick = () => { closeModal(); navigate("clients"); openClientModal(); };
     document.getElementById("qTrip").onclick = () => { closeModal(); navigate("trips"); openTripModal(); };
 }
@@ -111,14 +120,18 @@ window.toggleTheme = toggleTheme;
 
 // Init
 document.addEventListener("DOMContentLoaded", () => {
-    // Restore theme
+    // 1. Restore theme
     const savedTheme = localStorage.getItem("brianessa_theme") || "light";
     document.documentElement.setAttribute("data-theme", savedTheme);
 
-    // Bind Sidebar
+    // 2. Load Data State
+    loadState();
+
+    // 3. Bind Sidebar
     document.querySelectorAll(".nav-item").forEach(btn => {
         btn.addEventListener("click", () => {
-            const target = btn.dataset.target;
+            // FIX: Use dataset.route instead of dataset.target
+            const target = btn.dataset.route;
             if (target === "logout") {
                 if (confirm("¿Salir?")) location.reload();
             } else {
@@ -127,7 +140,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Bind Topbar
+    // 4. Bind Topbar
     const btnMenu = document.getElementById("btnMenu");
     const sidebar = document.querySelector(".sidebar");
     const overlay = document.querySelector(".overlay");
@@ -145,8 +158,8 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Search
-    const sInput = document.getElementById("searchInput");
+    // 5. Search
+    const sInput = getSearchInputEl();
     if (sInput) {
         sInput.addEventListener("input", (e) => {
             searchTerm = e.target.value.toLowerCase();
@@ -154,17 +167,16 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // Quick Menu Button
-    const btnQuick = document.getElementById("btnQuick");
+    // 6. Global Buttons
+    const btnQuick = document.getElementById("btnNewQuick") || document.getElementById("btnQuick");
     if (btnQuick) btnQuick.onclick = openQuickMenu;
 
-    // Theme Switch
     const btnTheme = document.getElementById("btnTheme");
     if (btnTheme) btnTheme.onclick = toggleTheme;
 
-    // Init Modal listeners
+    // 7. Init Modal
     initModal();
 
-    // Initial Render
+    // 8. Initial Render
     render();
 });

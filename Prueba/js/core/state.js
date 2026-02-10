@@ -23,7 +23,8 @@ export function seedState() {
             sms: [],
             emailHtml: [],
             disclaimers: [],
-        }
+        },
+        quotations: []
     };
 }
 
@@ -37,7 +38,13 @@ export function loadState() {
             return state;
         }
         const parsed = JSON.parse(raw);
-        state = { ...seedState(), ...parsed, settings: { ...seedState().settings, ...(parsed.settings || {}) } };
+        // Merge profundo seguro para settings
+        state = {
+            ...seedState(),
+            ...parsed,
+            settings: { ...seedState().settings, ...(parsed.settings || {}) },
+            quotations: parsed.quotations || [] // Asegurar que exista
+        };
         return state;
     } catch {
         state = seedState();
@@ -49,7 +56,6 @@ export function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-// Allow external modules to update state reference if needed, ideally modify properties of exported 'state'
 export function setState(newState) {
     Object.assign(state, newState);
     saveState();
@@ -60,4 +66,5 @@ export function refreshTripNames() {
     state.clients.forEach(c => c.tripName = map.get(c.tripId) || "");
     state.paymentPlans.forEach(p => p.tripName = map.get(p.tripId) || "");
     state.itineraries.forEach(i => i.tripName = map.get(i.tripId) || "");
+    // Quotations no usan tripId directamente, pero si lo usaran, iría aquí
 }

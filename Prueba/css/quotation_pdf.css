@@ -1,0 +1,330 @@
+/* 
+  QUOTATION PDF STYLES 
+  Copied from Cotizaciones/stylec.css to ensure exact match.
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+    --primary: #2563eb;
+    --primary-dark: #1e40af;
+    --secondary: #faa307;
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --text: #0f172a;
+    --text-light: #64748b;
+    --line: #e2e8f0;
+    --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+}
+
+/* Reset basics for the PDF container */
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', sans-serif;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+}
+
+/* Ensure images render */
+img {
+    max-width: 100%;
+    display: block;
+}
+
+/* Page Structure */
+.page {
+    width: 210mm;
+    height: 297mm;
+    background: white;
+    margin: 0 auto;
+    padding: 40px 50px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* Ensure no spillover */
+}
+
+/* HEADER */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 20px;
+    border-bottom: 2px solid var(--line);
+    margin-bottom: 30px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand__logo {
+    width: 48px;
+    height: 48px;
+    border-radius: 8px;
+    object-fit: cover;
+}
+
+.brand__text {
+    line-height: 1.2;
+}
+
+.brand__title {
+    font-weight: 800;
+    font-size: 14px;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: -0.02em;
+}
+
+.brand__sub {
+    font-size: 11px;
+    color: var(--text-light);
+    font-weight: 500;
+}
+
+.header__date {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+/* HERO SECTION */
+.hero {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    /* As per stylec.css */
+    gap: 40px;
+    margin-bottom: 40px;
+}
+
+.hero__left {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.pill {
+    display: inline-flex;
+    padding: 4px 12px;
+    background: #f1f5f9;
+    color: var(--text-light);
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 20px;
+    width: fit-content;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.title {
+    font-size: 36px;
+    font-weight: 800;
+    line-height: 1.1;
+    color: var(--text);
+    margin-bottom: 24px;
+    letter-spacing: -0.03em;
+}
+
+.chips {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.chip {
+    padding: 10px 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    flex: 1;
+    min-width: 100px;
+}
+
+.chip__label {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--text-light);
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.chip__value {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.smallnote {
+    font-size: 11px;
+    color: var(--text-light);
+    margin-top: 8px;
+}
+
+/* PRICE BOX */
+.pricebox {
+    background: var(--text);
+    color: white;
+    border-radius: 20px;
+    padding: 24px;
+    position: relative;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+.pricebox::before {
+    content: "";
+    /* Decorative circle if present in original */
+    position: absolute;
+    top: -50px;
+    right: -50px;
+    width: 150px;
+    height: 150px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 50%;
+}
+
+.pricebox__top {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.pricebox__label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.pricebox__price {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+.pricebox .pill {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    margin: 0;
+}
+
+.pricebox__row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.pricebox__row strong {
+    color: white;
+}
+
+.pricebox__note {
+    margin-top: 16px;
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.5);
+    line-height: 1.4;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 12px;
+}
+
+/* CARDS */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+}
+
+.card {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 20px;
+    height: 100%;
+}
+
+.card__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+}
+
+.card__head .icon {
+    font-size: 20px;
+}
+
+.card__head h3 {
+    font-size: 13px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: var(--text);
+    letter-spacing: 0.02em;
+}
+
+.list {
+    list-style: none;
+}
+
+.list li {
+    font-size: 12px;
+    color: var(--text-light);
+    margin-bottom: 8px;
+    position: relative;
+    padding-left: 14px;
+    line-height: 1.4;
+}
+
+.list li::before {
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: var(--secondary);
+    font-weight: bold;
+}
+
+/* GALLERY */
+.gallery {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 30px;
+}
+
+.gallery__img {
+    width: 100%;
+    aspect-ratio: 4/3;
+    object-fit: cover;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: #f8fafc;
+}
+
+/* FOOTER */
+.footer {
+    margin-top: auto;
+    padding-top: 20px;
+    border-top: 2px solid var(--line);
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-light);
+    line-height: 1.5;
+}
+
+.footer strong {
+    color: var(--text);
+    font-weight: 600;
+}
