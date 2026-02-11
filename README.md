@@ -1,7 +1,7 @@
 
 # AgenciaViajeHub - Brianessa Travel Hub
 
-Este repositorio contiene el sistema de gestión de operaciones y cotizaciones para **Brianessa Travel**. El proyecto está dividido en módulos para facilitar la gestión de clientes, viajes y presupuestos.
+Este repositorio contiene el sistema de gestión de operaciones y cotizaciones para **Una agencia de viaje**. El proyecto está dividido en módulos para facilitar la gestión de clientes, viajes y presupuestos.
 
 ## Estructura del Proyecto
 
@@ -43,4 +43,4 @@ Este es un proyecto estático que no requiere un servidor backend complejo para 
 3. Abre el archivo `index.html` (o `indexc.html`) directamente en tu navegador (Chrome recomendado para mejor compatibilidad de impresión).
 
 ## Créditos
-Desarrollado para **Brianessa Travel**.
+Desarrollado por **Darlyn Brito**.
