@@ -1,6 +1,7 @@
 import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, icon, toast } from "../utils/ui.js";
 import { escapeHtml, matchesSearch, uid, parseNum, round2, toMoney, formatDateLongISO, buildScheduleDates, splitInstallments, ordinalPago } from "../utils/helpers.js";
+import { hasPermission } from "../core/auth.js";
 
 // Make functions available globally for inline onclick handlers
 window.exportPaymentPlanPDF = exportPaymentPlanPDF;
@@ -17,8 +18,23 @@ window.downloadPaymentPlanAttachment = downloadPaymentPlanAttachment;
 window.removePaymentPlanAttachment = removePaymentPlanAttachment;
 window.togglePlanMenu = togglePlanMenu;
 
+function getConfiguredPaymentPlanStatuses() {
+    const list = state.settings?.modules?.paymentPlans?.statuses || [];
+    if (list.length) return list;
+    return [{ id: "pay_draft", label: "Borrador", color: "#64748b", isDefault: true, isFinal: false, order: 1 }];
+}
+
+function getDefaultPaymentPlanStatus() {
+    const statuses = getConfiguredPaymentPlanStatuses();
+    return statuses.find(s => s.isDefault) || statuses[0];
+}
+
 export function renderPaymentPlans(searchTerm = "") {
+    const canManage = hasPermission("paymentPlans.manage") || hasPermission("*");
+    const statuses = getConfiguredPaymentPlanStatuses();
+    const getStatus = (p) => statuses.find(s => s.id === p.statusId) || getDefaultPaymentPlanStatus();
     const rows = state.paymentPlans.filter(p => matchesSearch(p, searchTerm)).map(p => {
+        const status = getStatus(p);
         const hasPdf = !!p.attachmentPdf;
         const pdfBadge = hasPdf ? `<span class="badge pdf" title="Tiene PDF adjunto">PDF</span>` : ``;
 
@@ -32,11 +48,11 @@ export function renderPaymentPlans(searchTerm = "") {
         <span class="mi-ic">${icon('download')}</span>
         <span class="mi-tx">Descargar plan (PDF)</span>
       </button>
-      <button class="menu-item" onclick="window.duplicatePaymentPlan('${p.id}')">
+      ${canManage ? `<button class="menu-item" onclick="window.duplicatePaymentPlan('${p.id}')">
         <span class="mi-ic">${icon('copy')}</span>
         <span class="mi-tx">Duplicar</span>
       </button>
-      <div class="menu-sep"></div>
+      <div class="menu-sep"></div>` : ``}
       ${hasPdf ? `
         <div class="menu-sep"></div>
         <button class="menu-item" onclick="window.previewPaymentPlanAttachment('${p.id}')">
@@ -52,11 +68,11 @@ export function renderPaymentPlans(searchTerm = "") {
           <span class="mi-tx">Quitar PDF adjunto</span>
         </button>
       ` : ``}
-      <div class="menu-sep"></div>
+      ${canManage ? `<div class="menu-sep"></div>
       <button class="menu-item danger" onclick="window.deletePaymentPlan('${p.id}')">
         <span class="mi-ic">${icon('trash')}</span>
         <span class="mi-tx">Eliminar plan</span>
-      </button>
+      </button>` : ``}
     `;
 
         return `
@@ -68,14 +84,17 @@ export function renderPaymentPlans(searchTerm = "") {
               ${pdfBadge}
             </div>
             <div class="kbd">${escapeHtml(p.tripName || p.tripDisplay || "")}</div>
+            <div style="margin-top:6px;">
+              <span class="status-chip" style="--status-color:${escapeHtml(status.color || "#64748b")}">${escapeHtml(status.label || "Estado")}</span>
+            </div>
           </div>
         </td>
         <td>${escapeHtml(p.currency || state.settings.currencyDefault)}</td>
         <td>${escapeHtml(p.startDate || "")}</td>
         <td>
           <div class="actions compact">
-            <button class="icon-btn" onclick="window.viewPaymentPlan('${p.id}')">${icon('eye')}</button>
-            <button class="icon-btn" onclick="window.editPaymentPlan('${p.id}')">${icon('edit')}</button>
+            ${canManage ? `<button class="icon-btn" onclick="window.viewPaymentPlan('${p.id}')">${icon('eye')}</button>
+            <button class="icon-btn" onclick="window.editPaymentPlan('${p.id}')">${icon('edit')}</button>` : ``}
 
             <div class="action-menu" data-menu="${p.id}">
               <button class="icon-btn menu-trigger" onclick="window.togglePlanMenu(event,'${p.id}')">${icon('dots')}</button>
@@ -93,7 +112,7 @@ export function renderPaymentPlans(searchTerm = "") {
     <div class="card">
       ${renderModuleToolbar("paymentPlans",
         `<div><h2 style="margin:0;">Planes de pago</h2><div class="kbd">Tú das lo principal y se calcula todo (cuotas/fechas/recargo).</div></div>`,
-        `<button class="btn primary" onclick="window.openPaymentPlanModal()">+ Nuevo plan</button>`
+        `${canManage ? `<button class="btn primary" onclick="window.openPaymentPlanModal()">+ Nuevo plan</button>` : ``}`
     )}
       <hr/>
       <table class="table">
@@ -105,85 +124,128 @@ export function renderPaymentPlans(searchTerm = "") {
 }
 
 export function openPaymentPlanModal(existing = null) {
+    if (!(hasPermission("paymentPlans.manage") || hasPermission("*"))) {
+        toast("No tienes permiso para modificar planes de pago.");
+        return;
+    }
     const isEditing = !!existing && !existing.__draftDuplicate;
+    const paymentStatuses = getConfiguredPaymentPlanStatuses();
+    const defaultStatus = getDefaultPaymentPlanStatus();
+    const currentStatusId = existing?.statusId || defaultStatus.id;
     const clientOptions = state.clients.map(c => `<option value="${escapeHtml(c.name)}"></option>`).join("");
     const tripOptions = state.trips.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
 
     openModal({
         title: isEditing ? "Editar plan de pago" : "Nuevo plan de pago",
         bodyHtml: `
-      <div class="grid">
-        <div class="field col-12">
-          <label>Cliente (buscar o crear)</label>
-          <input
-            id="pClientSearch"
-            list="pClientList"
-            value="${escapeHtml(existing?.clientName || existing?.clientDisplay || "")}"
-            placeholder="Escribe para buscar. Si no existe, se creará al guardar."
-          />
-          <datalist id="pClientList">${clientOptions}</datalist>
-          <div class="kbd" style="margin-top:6px;">Si el nombre no existe en clientes, se agrega automáticamente.</div>
+      <div class="form-layout form-layout--payment">
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">1</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Cliente y Viaje</h4>
+              <p class="form-section__hint">Selecciona cliente y viaje para contextualizar el plan.</p>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-12">
+              <label>Cliente (buscar o crear) <span class="req">*</span></label>
+              <input
+                id="pClientSearch"
+                list="pClientList"
+                autofocus
+                value="${escapeHtml(existing?.clientName || existing?.clientDisplay || "")}"
+                placeholder="Escribe para buscar. Si no existe, se creará al guardar."
+              />
+              <datalist id="pClientList">${clientOptions}</datalist>
+              <div class="kbd" style="margin-top:6px;">Si el nombre no existe en clientes, se agrega automáticamente.</div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="field col-6">
+              <label>Viaje (opcional si no está creado)</label>
+              <select id="pTrip"><option value="">(Sin seleccionar)</option>${tripOptions}</select>
+            </div>
+            <div class="field col-6">
+              <label>Nombre del viaje (si no usas el select)</label>
+              <input id="pTripDisplay" value="${escapeHtml(existing?.tripDisplay || "")}" placeholder="Ej: Dubai con Richard Santos (Escala Dubai)" />
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Mensaje adicional (opcional)</label>
+            <input id="pExtra" value="${escapeHtml(existing?.extra || "")}" placeholder="Ej: con Richard Santos (ESCALA DUBAI)" />
+          </div>
         </div>
-      </div>
 
-      <div class="grid">
-        <div class="field col-6">
-          <label>Viaje (opcional si no está creado)</label>
-          <select id="pTrip"><option value="">(Sin seleccionar)</option>${tripOptions}</select>
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">2</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Configuración del Plan</h4>
+              <p class="form-section__hint">Define monto, fechas, frecuencia y método de pago.</p>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-4">
+              <label>Estado</label>
+              <select id="pStatus">
+                ${paymentStatuses.map(st => `<option value="${escapeHtml(st.id)}" ${st.id === currentStatusId ? "selected" : ""}>${escapeHtml(st.label)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field col-4">
+              <label>Moneda <span class="req">*</span></label>
+              <select id="pCurrency">
+                <option value="USD">USD</option>
+                <option value="DOP">DOP</option>
+              </select>
+            </div>
+            <div class="field col-4"><label>Monto total <span class="req">*</span></label><input id="pTotal" value="${escapeHtml(existing?.total || "")}" placeholder="Ej: 3797" /></div>
+          </div>
+
+          <div class="grid">
+            <div class="field col-4"><label>Descuento</label><input id="pDiscount" value="${escapeHtml(existing?.discount || "0")}" placeholder="Ej: 300" /></div>
+            <div class="field col-4"><label>Reserva pagada</label><input id="pDeposit" value="${escapeHtml(existing?.deposit || "0")}" placeholder="Ej: 250" /></div>
+            <div class="field col-4">
+              <label>Frecuencia</label>
+              <select id="pFreq"><option>Mensual</option><option>Quincenal</option></select>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="field col-4">
+              <label>Forma de pago</label>
+              <select id="pMethod"><option>Transferencia</option><option>Tarjeta</option></select>
+            </div>
+            <div class="field col-4"><label>Fecha inicio <span class="req">*</span></label><input id="pStart" type="date" value="${escapeHtml(existing?.startDate || "")}" /></div>
+            <div class="field col-4"><label>Fecha fin <span class="req">*</span></label><input id="pEnd" type="date" value="${escapeHtml(existing?.endDate || "")}" /></div>
+          </div>
+
+          <div class="field">
+            <label>Link de pago</label>
+            <input id="pLink" value="${escapeHtml(existing?.paymentLink || "")}" placeholder="Pega tu link aquí" />
+          </div>
         </div>
-        <div class="field col-6">
-          <label>Nombre del viaje (si no usas el select)</label>
-          <input id="pTripDisplay" value="${escapeHtml(existing?.tripDisplay || "")}" placeholder="Ej: Dubai con Richard Santos (Escala Dubai)" />
+
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">3</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Texto para PDF</h4>
+              <p class="form-section__hint">Genera el texto base y ajústalo antes de guardar.</p>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" id="pGenerate">Generar texto (formato PDF)</button>
+            <span class="kbd">Usa el estilo de tu PDF de Dubái.</span>
+          </div>
+
+          <div class="field">
+            <label>Texto generado</label>
+            <textarea id="pText" placeholder="Aquí sale el documento...">${escapeHtml(existing?.text || "")}</textarea>
+          </div>
         </div>
-      </div>
-
-      <div class="field">
-        <label>Mensaje adicional (opcional)</label>
-        <input id="pExtra" value="${escapeHtml(existing?.extra || "")}" placeholder="Ej: con Richard Santos (ESCALA DUBAI)" />
-      </div>
-
-      <div class="grid">
-        <div class="field col-4">
-          <label>Moneda</label>
-          <select id="pCurrency">
-            <option value="USD">USD</option>
-            <option value="DOP">DOP</option>
-          </select>
-        </div>
-        <div class="field col-4"><label>Monto total</label><input id="pTotal" value="${escapeHtml(existing?.total || "")}" placeholder="Ej: 3797" /></div>
-        <div class="field col-4"><label>Descuento</label><input id="pDiscount" value="${escapeHtml(existing?.discount || "0")}" placeholder="Ej: 300" /></div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-4"><label>Reserva pagada</label><input id="pDeposit" value="${escapeHtml(existing?.deposit || "0")}" placeholder="Ej: 250" /></div>
-        <div class="field col-4">
-          <label>Frecuencia</label>
-          <select id="pFreq"><option>Mensual</option><option>Quincenal</option></select>
-        </div>
-        <div class="field col-4">
-          <label>Forma de pago</label>
-          <select id="pMethod"><option>Transferencia</option><option>Tarjeta</option></select>
-        </div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-6"><label>Fecha inicio</label><input id="pStart" type="date" value="${escapeHtml(existing?.startDate || "")}" /></div>
-        <div class="field col-6"><label>Fecha fin</label><input id="pEnd" type="date" value="${escapeHtml(existing?.endDate || "")}" /></div>
-      </div>
-
-      <div class="field">
-        <label>Link de pago</label>
-        <input id="pLink" value="${escapeHtml(existing?.paymentLink || "")}" placeholder="Pega tu link aquí" />
-      </div>
-
-      <div class="row">
-        <button class="btn" id="pGenerate">Generar texto (formato PDF)</button>
-        <span class="kbd">Usa el estilo de tu PDF de Dubái.</span>
-      </div>
-
-      <div class="field">
-        <label>Texto generado</label>
-        <textarea id="pText" placeholder="Aquí sale el documento...">${escapeHtml(existing?.text || "")}</textarea>
       </div>
     `,
         onSave: () => {
@@ -210,6 +272,8 @@ export function openPaymentPlanModal(existing = null) {
             const clientId = clientObj?.id || "";
             const tripId = document.getElementById("pTrip").value || "";
             const tripObj = state.trips.find(t => t.id === tripId);
+            const selectedStatusId = document.getElementById("pStatus").value;
+            const selectedStatus = paymentStatuses.find(st => st.id === selectedStatusId) || defaultStatus;
 
             const clientDisplay = clientInputRaw;
             const tripDisplay = document.getElementById("pTripDisplay").value.trim();
@@ -224,9 +288,15 @@ export function openPaymentPlanModal(existing = null) {
             const endDate = document.getElementById("pEnd").value || "";
             const paymentLink = document.getElementById("pLink").value.trim();
             const text = document.getElementById("pText").value.trim();
+            if (!clientInputRaw) { toast("Completa el cliente."); return; }
+            if (!currency) { toast("Selecciona la moneda."); return; }
+            if (!(total > 0)) { toast("Ingresa un monto total válido."); return; }
+            if (!startDate || !endDate) { toast("Completa fecha inicio y fin."); return; }
 
             const payload = {
                 id: isEditing ? existing.id : uid("pay"),
+                statusId: selectedStatus.id,
+                statusLabel: selectedStatus.label,
                 clientId,
                 tripId,
                 clientName: clientObj?.name || "",
@@ -350,6 +420,10 @@ export function editPaymentPlan(id) {
 }
 
 export function duplicatePaymentPlan(id) {
+    if (!(hasPermission("paymentPlans.manage") || hasPermission("*"))) {
+        toast("No tienes permiso para duplicar planes.");
+        return;
+    }
     const source = state.paymentPlans.find(x => x.id === id);
     if (!source) { toast("No encontré ese plan."); return; }
 
@@ -368,6 +442,10 @@ export function duplicatePaymentPlan(id) {
 }
 
 export function deletePaymentPlan(id) {
+    if (!(hasPermission("paymentPlans.manage") || hasPermission("*"))) {
+        toast("No tienes permiso para eliminar planes.");
+        return;
+    }
     state.paymentPlans = state.paymentPlans.filter(x => x.id !== id);
     saveState();
     if (window.render) window.render();
@@ -903,6 +981,19 @@ export function exportPaymentPlanPDF(id) {
     return generatePaymentPlanPDF(id, "download");
 }
 
+function buildPaymentPlanFilename(p) {
+    const toFileLabel = (value, fallback) => {
+        const raw = (value || fallback).toString().trim();
+        return raw
+            .replace(/[\\/:*?"<>|]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    };
+    const clientLabel = toFileLabel(p.clientName || p.clientDisplay, "Cliente");
+    const tripLabel = toFileLabel(p.tripName || p.tripDisplay, "Viaje");
+    return `Plan de Pago - ${clientLabel} - ${tripLabel}.pdf`;
+}
+
 async function generatePaymentPlanPDF(id, mode = "download") {
     const p = state.paymentPlans.find(x => x.id === id);
     if (!p) { toast("No encontré ese plan."); return; }
@@ -919,8 +1010,7 @@ async function generatePaymentPlanPDF(id, mode = "download") {
         root.innerHTML = buildPaymentPlanPdfHTML(p);
         const element = root.firstElementChild;
 
-        const safeClient = (p.clientName || p.clientDisplay || "plan").toString().trim().replace(/[^\\w\\-]+/g, "_");
-        const filename = `PlanPago_${safeClient}.pdf`;
+        const filename = buildPaymentPlanFilename(p);
 
         const opt = {
             margin: [18, 18, 18, 18],
@@ -990,7 +1080,7 @@ function exportPaymentPlanPDF_fallback(p) {
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF();
         doc.text(text, 10, 10);
-        doc.save("PlanPago.pdf");
+        doc.save(buildPaymentPlanFilename(p));
     } else {
         alert("No se puede generar PDF (librerías faltantes).");
     }
@@ -1047,7 +1137,7 @@ export function generateAndAttachPaymentPlanPDF(id) {
     html2pdf().set(opt).from(element).outputPdf('datauristring')
         .then((pdfAsString) => {
             p.attachmentPdf = {
-                name: `Plan_${p.clientName || "pago"}.pdf`,
+                name: buildPaymentPlanFilename(p),
                 type: "application/pdf",
                 size: pdfAsString.length, // approximation
                 dataUrl: pdfAsString,

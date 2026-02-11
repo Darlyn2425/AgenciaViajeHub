@@ -82,6 +82,25 @@ export function openModal({ title, bodyHtml, onSave }) {
     modal.onSave = onSave;
     modal.overlay.classList.remove("hidden");
     modal.btnSave.onclick = async () => { if (modal.onSave) await modal.onSave(); };
+    setTimeout(() => {
+        const root = modal.body;
+        if (!root) return;
+        const explicit = root.querySelector("[autofocus]");
+        if (explicit && typeof explicit.focus === "function") {
+            explicit.focus();
+            return;
+        }
+        const firstEmpty = Array.from(root.querySelectorAll("input, textarea, select"))
+            .find(el => {
+                if (el.disabled || el.readOnly) return false;
+                const tag = el.tagName.toLowerCase();
+                if (tag === "select") return true;
+                if (tag === "textarea") return !el.value;
+                if (el.type === "hidden" || el.type === "file") return false;
+                return !el.value;
+            });
+        if (firstEmpty && typeof firstEmpty.focus === "function") firstEmpty.focus();
+    }, 0);
 }
 
 export function closeModal() {

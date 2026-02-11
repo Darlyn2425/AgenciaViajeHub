@@ -1,5 +1,16 @@
 {
+  "name": "brianessa-travel-hub",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Travel Hub Management System",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "vercel dev"
+  },
   "dependencies": {
-    "dotenv": "^17.2.3"
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^17.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.15.0"
   }
 }

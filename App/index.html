@@ -557,18 +557,33 @@
       </div>
 
       <nav class="nav">
-        <button class="nav-item active" data-route="dashboard">Dashboard</button>
-        <button class="nav-item" data-route="clients">Clientes</button>
-        <button class="nav-item" data-route="trips">Viajes / Grupos</button>
-        <button class="nav-item" data-route="payment-plans">Planes de pago</button>
-        <button class="nav-item" data-route="itineraries">Itinerarios</button>
-        <button class="nav-item" data-route="quotations">Cotizaciones</button>
-        <button class="nav-item" data-route="campaigns">Campañas Email/SMS</button>
-        <button class="nav-item" data-route="templates">Plantillas</button>
-        <button class="nav-item" data-route="ai">Asistente IA</button>
+        <div class="nav-group">
+          <div class="nav-section">Principal</div>
+          <button class="nav-item active" data-route="dashboard"><span class="nav-ic">📊</span><span class="nav-label">Dashboard</span></button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-section">Operaciones</div>
+          <button class="nav-item" data-route="clients"><span class="nav-ic">👥</span><span class="nav-label">Clientes</span></button>
+          <button class="nav-item" data-route="trips"><span class="nav-ic">✈️</span><span class="nav-label">Viajes / Grupos</span></button>
+          <button class="nav-item" data-route="payment-plans"><span class="nav-ic">💳</span><span class="nav-label">Planes de pago</span></button>
+          <button class="nav-item" data-route="itineraries"><span class="nav-ic">🗺️</span><span class="nav-label">Itinerarios</span></button>
+          <button class="nav-item" data-route="quotations"><span class="nav-ic">🧾</span><span class="nav-label">Cotizaciones</span></button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-section">Marketing y Contenido</div>
+          <button class="nav-item" data-route="campaigns"><span class="nav-ic">📣</span><span class="nav-label">Campañas Email/SMS</span></button>
+          <button class="nav-item" data-route="templates"><span class="nav-ic">📄</span><span class="nav-label">Plantillas</span></button>
+          <button class="nav-item" data-route="ai"><span class="nav-ic">🤖</span><span class="nav-label">Asistente IA</span><span class="nav-badge">Nuevo</span></button>
+        </div>
 
         <div class="nav-sep"></div>
-        <button class="nav-item" data-route="settings">Configuración</button>
+
+        <div class="nav-group">
+          <div class="nav-section">Sistema</div>
+          <button class="nav-item" data-route="settings"><span class="nav-ic">⚙️</span><span class="nav-label">Configuración</span></button>
+        </div>
       </nav>
     </aside>
 
@@ -578,6 +593,14 @@
           <input id="globalSearch" placeholder="Buscar cliente, viaje, pago, itinerario..." />
         </div>
         <div class="top-actions">
+          <label class="theme-switch" title="Cambiar tema">
+            <input id="themeSwitch" type="checkbox" aria-label="Cambiar tema" />
+            <span class="theme-switch__track">
+              <span class="theme-switch__thumb"></span>
+            </span>
+          </label>
+          <button id="currentUserBadge" class="btn ghost" style="display:none;" title="Mi perfil"></button>
+          <button id="btnLogout" class="btn ghost" style="display:none;">Salir</button>
           <span id="clock" class="pill"></span>
           <button id="btnNewQuick" class="btn primary">+ Nuevo</button>
         </div>
