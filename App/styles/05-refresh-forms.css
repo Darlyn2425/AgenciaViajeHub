@@ -1,0 +1,340 @@
+/* ===== UI refresh v2 (CRM polish) ===== */
+.content {
+  gap: 16px;
+}
+
+.card {
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 18px 36px rgba(2, 6, 23, .16);
+}
+
+:root[data-theme="light"] .card {
+  box-shadow: 0 14px 30px rgba(15, 23, 42, .08);
+}
+
+.toolbar {
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.toolbar h2 {
+  font-size: 34px;
+  letter-spacing: -.3px;
+}
+
+.toolbar .kbd {
+  font-size: 12px;
+}
+
+.toolbar .right {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  border-radius: 12px;
+  height: 38px;
+  font-weight: 700;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(2, 6, 23, .14);
+}
+
+.btn.primary {
+  border-color: rgba(200, 168, 106, .42);
+  background: linear-gradient(135deg, rgba(200, 168, 106, .24) 0%, rgba(200, 168, 106, .14) 100%);
+}
+
+.icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
+}
+
+.icon-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(2, 6, 23, .14);
+}
+
+.table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.table thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--muted);
+  padding: 12px 10px;
+}
+
+.table tbody tr {
+  transition: background .15s ease, transform .15s ease;
+}
+
+.table tbody tr:hover {
+  background: rgba(148, 163, 184, .08);
+}
+
+:root[data-theme="light"] .table tbody tr:hover {
+  background: #f3f7ff;
+}
+
+.table td {
+  padding: 12px 10px;
+}
+
+.plan-cell .plan-main strong {
+  font-size: 18px;
+  letter-spacing: -.15px;
+}
+
+.status-chip {
+  border-radius: 999px;
+  font-weight: 800;
+  padding: 4px 9px;
+}
+
+.field {
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.field label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  font-weight: 700;
+  opacity: .92;
+}
+
+.field input,
+.field textarea,
+.field select {
+  border-radius: 12px;
+  padding: 11px 12px;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: rgba(200, 168, 106, .45);
+  box-shadow: 0 0 0 4px rgba(200, 168, 106, .12);
+}
+
+.modal {
+  border-radius: 18px;
+  box-shadow: 0 24px 54px rgba(2, 6, 23, .45);
+}
+
+.modal-header,
+.modal-footer {
+  padding: 12px 14px;
+}
+
+.modal-header h3 {
+  font-size: 19px;
+  letter-spacing: -.2px;
+}
+
+.modal-body {
+  padding: 14px;
+}
+
+@media (max-width: 980px) {
+  .toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .toolbar .right {
+    width: 100%;
+  }
+
+  .toolbar .right .btn {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* ===== Forms UX refresh ===== */
+.modal {
+  width: min(900px, 100%);
+  border-radius: 16px;
+}
+
+.form-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.form-layout--quotation,
+.form-layout--payment {
+  gap: 12px;
+}
+
+.form-section {
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 12px;
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+}
+
+:root[data-theme="light"] .form-section {
+  background: #ffffff;
+}
+
+.form-section__head {
+  margin-bottom: 8px;
+  padding-bottom: 0;
+  border-bottom: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.form-section__title {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: -.1px;
+  font-weight: 700;
+}
+
+.form-section__hint {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.form-section__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.form-section__index {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--input-border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.form-layout .field {
+  margin-bottom: 6px;
+}
+
+.form-layout .field label {
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: .08px;
+  font-weight: 600;
+  color: var(--muted);
+  opacity: 1;
+}
+
+.req {
+  color: #c2410c;
+  font-weight: 700;
+}
+
+.form-layout .field input,
+.form-layout .field textarea,
+.form-layout .field select {
+  border-radius: 10px;
+  padding: 10px 11px;
+  border-color: var(--input-border);
+  background: var(--input-bg);
+}
+
+.form-layout .field input::placeholder,
+.form-layout .field textarea::placeholder {
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+}
+
+.form-layout .field input:focus,
+.form-layout .field textarea:focus,
+.form-layout .field select:focus {
+  border-color: rgba(200, 168, 106, .42);
+  box-shadow: 0 0 0 3px rgba(200, 168, 106, .12);
+}
+
+.form-layout .field textarea {
+  min-height: 96px;
+}
+
+.form-layout .row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.form-layout .row .kbd {
+  padding: 5px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+.q-it-day-item {
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+  padding: 10px;
+  margin-top: 10px;
+  background: var(--input-bg);
+}
+
+.q-it-day-image-preview-wrap {
+  margin-top: 8px;
+}
+
+.q-it-day-image-preview {
+  width: 100%;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--input-border);
+}
+
+.q-it-day-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+:root[data-theme="light"] .form-layout .row .kbd {
+  background: #fcfdff;
+}
+
+:root[data-theme="light"] .q-it-day-item {
+  background: #ffffff;
+}
+
+@media (max-width: 760px) {
+  .modal {
+    width: min(100%, 100%);
+    max-height: 94vh;
+  }
+
+  .form-section {
+    padding: 10px;
+  }
+}
