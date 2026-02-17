@@ -4,13 +4,19 @@
   "private": true,
   "description": "Travel Hub Management System",
   "scripts": {
-    "dev": "vercel dev",
-    "start": "vercel dev"
+    "dev": "npm run dev:web",
+    "dev:web": "npx serve App -l 3000",
+    "dev:vercel": "vercel dev --yes",
+    "start": "npm run dev:vercel"
   },
   "dependencies": {
+    "@vercel/blob": "^2.2.0",
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.2.3",
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.15.0"
+  },
+  "devDependencies": {
+    "vercel": "^50.15.1"
   }
 }

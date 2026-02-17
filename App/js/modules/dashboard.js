@@ -1,5 +1,6 @@
 import { state } from "../core/state.js";
 import { setContent } from "../utils/ui.js";
+import { getTenantItems } from "../utils/tenant-data.js";
 
 export function renderDashboard() {
     const sparkline = (values, stroke) => {
@@ -30,40 +31,44 @@ export function renderDashboard() {
         }).format(amount);
     };
 
-    const quotationsCount = state.quotations.length;
-    const plansCount = state.paymentPlans.length;
-    const clientsCount = state.clients.length;
-    const tripsCount = state.trips.length;
+    const quotations = getTenantItems("quotations");
+    const paymentPlans = getTenantItems("paymentPlans");
+    const clients = getTenantItems("clients");
+    const trips = getTenantItems("trips");
+    const quotationsCount = quotations.length;
+    const plansCount = paymentPlans.length;
+    const clientsCount = clients.length;
+    const tripsCount = trips.length;
 
-    const totalQuoted = state.quotations.reduce((sum, q) => sum + Number(q.total || 0), 0);
-    const totalPlanned = state.paymentPlans.reduce((sum, p) => sum + Number(p.total || 0), 0);
-    const totalDeposits = state.paymentPlans.reduce((sum, p) => sum + Number(p.deposit || 0), 0);
+    const totalQuoted = quotations.reduce((sum, q) => sum + Number(q.total || 0), 0);
+    const totalPlanned = paymentPlans.reduce((sum, p) => sum + Number(p.total || 0), 0);
+    const totalDeposits = paymentPlans.reduce((sum, p) => sum + Number(p.deposit || 0), 0);
     const pendingCollection = Math.max(0, totalPlanned - totalDeposits);
 
-    const countWithTrip = state.clients.filter(c => (c.tripName || "").trim()).length;
-    const countWithQuotation = state.clients.filter(c => {
+    const countWithTrip = clients.filter(c => (c.tripName || "").trim()).length;
+    const countWithQuotation = clients.filter(c => {
         const cn = (c.name || "").trim().toLowerCase();
-        return !!cn && state.quotations.some(q => ((q.clientName || q.clientDisplay || "").trim().toLowerCase() === cn));
+        return !!cn && quotations.some(q => ((q.clientName || q.clientDisplay || "").trim().toLowerCase() === cn));
     }).length;
-    const countWithPlan = state.clients.filter(c => {
+    const countWithPlan = clients.filter(c => {
         const cn = (c.name || "").trim().toLowerCase();
-        return !!cn && state.paymentPlans.some(p => ((p.clientName || p.clientDisplay || "").trim().toLowerCase() === cn));
+        return !!cn && paymentPlans.some(p => ((p.clientName || p.clientDisplay || "").trim().toLowerCase() === cn));
     }).length;
 
     const clientsWithoutQuote = Math.max(0, clientsCount - countWithQuotation);
     const clientsWithoutPlan = Math.max(0, clientsCount - countWithPlan);
     const conversionRate = quotationsCount ? Math.round((plansCount / quotationsCount) * 100) : 0;
 
-    const recentQuotations = [...state.quotations]
+    const recentQuotations = [...quotations]
         .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
         .slice(0, 5);
-    const upcomingPlans = [...state.paymentPlans]
+    const upcomingPlans = [...paymentPlans]
         .filter(p => p.startDate || p.endDate)
         .sort((a, b) => String(a.startDate || a.endDate).localeCompare(String(b.startDate || b.endDate)))
         .slice(0, 5);
 
     const todayISO = new Date().toISOString().slice(0, 10);
-    const planClientSet = new Set(state.paymentPlans.map(p => (p.clientName || p.clientDisplay || "").trim().toLowerCase()).filter(Boolean));
+    const planClientSet = new Set(paymentPlans.map(p => (p.clientName || p.clientDisplay || "").trim().toLowerCase()).filter(Boolean));
     const quoteStatus = (q) => {
         const clientKey = (q.clientName || q.clientDisplay || "").trim().toLowerCase();
         if (clientKey && planClientSet.has(clientKey)) return { label: "Con plan", tone: "ok" };

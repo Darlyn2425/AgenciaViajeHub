@@ -95,6 +95,8 @@ export function ensureAuthState() {
     if (!Array.isArray(state.auth.roles) || !state.auth.roles.length) state.auth.roles = defaultRoles();
     if (!Array.isArray(state.auth.users) || !state.auth.users.length) state.auth.users = [defaultAdminUser()];
     if (typeof state.auth.currentUserId !== "string") state.auth.currentUserId = "";
+    if (typeof state.auth.apiToken !== "string") state.auth.apiToken = "";
+    if (!Number.isFinite(Number(state.auth.apiTokenExp))) state.auth.apiTokenExp = 0;
 
     // Migration: plain text password -> hash
     state.auth.users = state.auth.users.map(u => {
@@ -176,6 +178,8 @@ export function login(username, password) {
 export function logout() {
     ensureAuthState();
     state.auth.currentUserId = "";
+    state.auth.apiToken = "";
+    state.auth.apiTokenExp = 0;
     saveState();
 }
 
@@ -235,6 +239,8 @@ export function removeUser(userId) {
 export function resetAccessToDefault() {
     state.auth = {
         currentUserId: "",
+        apiToken: "",
+        apiTokenExp: 0,
         roles: defaultRoles(),
         users: [defaultAdminUser()]
     };

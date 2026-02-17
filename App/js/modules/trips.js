@@ -1,11 +1,106 @@
-import { state, saveState, refreshTripNames } from "../core/state.js";
-import { setContent, renderModuleToolbar, openModal, closeModal } from "../utils/ui.js";
+import { saveState, refreshTripNames } from "../core/state.js";
+import { setContent, renderModuleToolbar, openModal, closeModal, toast } from "../utils/ui.js";
 import { escapeHtml, matchesSearch, uid } from "../utils/helpers.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
+import {
+  getTenantItems,
+  findTenantItem,
+  upsertTenantItem,
+  pushTenantItem,
+  removeTenantItems,
+  replaceTenantItems,
+} from "../utils/tenant-data.js";
 
+const API_TIMEOUT_MS = 8000;
+let tripsApiSyncStarted = false;
+let tripsApiSyncCompleted = false;
+let tripsIsLoading = false;
+let tripsLastFetchKey = "";
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchTripsFromApi({ search = "" } = {}) {
+  const params = new URLSearchParams({ page: "1", limit: "500", search: String(search || "") });
+  const response = await fetchWithTimeout(withTenantQuery(`/api/trips?${params.toString()}`), {
+    headers: tenantHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  return { items: data.items };
+}
+
+async function upsertTripToApi(trip) {
+  const response = await fetchWithTimeout(withTenantQuery("/api/trips"), {
+    method: "POST",
+    headers: tenantHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(trip || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.item) throw new Error(data?.error || `HTTP ${response.status}`);
+  return data.item;
+}
+
+async function deleteTripFromApi(id) {
+  const response = await fetchWithTimeout(withTenantQuery(`/api/trips?id=${encodeURIComponent(id)}`), {
+    method: "DELETE",
+    headers: tenantHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+  return true;
+}
+
+async function syncTripsFromApi(searchTerm = "") {
+  const key = String(searchTerm || "").toLowerCase().trim();
+  if (tripsIsLoading || (tripsApiSyncStarted && tripsLastFetchKey === key)) return;
+  tripsApiSyncStarted = true;
+  tripsIsLoading = true;
+  tripsLastFetchKey = key;
+  try {
+    const remote = await fetchTripsFromApi({ search: key });
+    replaceTenantItems("trips", remote.items);
+    refreshTripNames();
+    saveState();
+    tripsApiSyncCompleted = true;
+    if (window.render) window.render();
+  } catch (error) {
+    console.warn("[trips] sync warning:", error?.message || error);
+  } finally {
+    tripsApiSyncStarted = false;
+    tripsIsLoading = false;
+  }
+}
+
+function syncTripInBackground(payload) {
+  upsertTripToApi(payload)
+    .then((remoteItem) => {
+      upsertTenantItem("trips", remoteItem);
+      refreshTripNames();
+      saveState();
+      if (window.render) window.render();
+    })
+    .catch((error) => {
+      toast(`Viaje guardado localmente. Error al sincronizar: ${error?.message || error}`);
+    });
+}
 
 export function renderTrips(searchTerm = "") {
-  const rows = state.trips.filter(t => matchesSearch(t, searchTerm)).map(t => `
+  if (!tripsApiSyncCompleted || !tripsApiSyncStarted) {
+    syncTripsFromApi(searchTerm);
+  }
+
+  const trips = getTenantItems("trips");
+  const rows = trips.filter(t => matchesSearch(t, searchTerm)).map(t => `
     <tr>
       <td><strong>${escapeHtml(t.name)}</strong><div class="kbd">${escapeHtml(t.destination || "")}</div></td>
       <td>${escapeHtml(t.startDate || "")}</td>
@@ -26,7 +121,7 @@ export function renderTrips(searchTerm = "") {
       <hr/>
       <table class="table">
         <thead><tr><th>Viaje</th><th>Fecha</th><th>Estado</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay viajes todavía.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">${tripsIsLoading ? "Cargando viajes..." : "No hay viajes todavía."}</td></tr>`}</tbody>
       </table>
     </div>
   `);
@@ -53,37 +148,57 @@ export function openTripModal(existing = null) {
     `,
     onSave: () => {
       const name = document.getElementById("tName").value.trim();
-      if (!name) return;
+      if (!name) {
+        toast("El viaje necesita un nombre.");
+        return;
+      }
       const destination = document.getElementById("tDest").value.trim();
       const startDate = document.getElementById("tStart").value;
       const endDate = document.getElementById("tEnd").value;
       const status = document.getElementById("tStatus").value;
 
-      if (existing) {
-        Object.assign(existing, { name, destination, startDate, endDate, status });
-      } else {
-        state.trips.push({ id: uid("trip"), name, destination, startDate, endDate, status });
-      }
+      const payload = {
+        id: existing?.id || uid("trip"),
+        name,
+        destination,
+        startDate,
+        endDate,
+        status,
+      };
+
+      if (existing) Object.assign(existing, payload);
+      else pushTenantItem("trips", payload);
+
       refreshTripNames();
       saveState();
       closeModal();
       if (window.render) window.render();
+      syncTripInBackground(payload);
     }
   });
   if (existing?.status) document.getElementById("tStatus").value = existing.status;
 }
 
 export function editTrip(id) {
-  const t = state.trips.find(x => x.id === id);
+  const t = findTenantItem("trips", x => x.id === id);
   if (t) openTripModal(t);
 }
 
 export function deleteTrip(id) {
   if (!confirm("¿Eliminar trip?")) return;
-  state.trips = state.trips.filter(x => x.id !== id);
+  const backup = findTenantItem("trips", x => x.id === id);
+  removeTenantItems("trips", x => x.id === id);
   refreshTripNames();
   saveState();
   if (window.render) window.render();
+
+  deleteTripFromApi(id).catch((error) => {
+    if (backup) upsertTenantItem("trips", backup);
+    refreshTripNames();
+    saveState();
+    if (window.render) window.render();
+    toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
+  });
 }
 
 window.openTripModal = openTripModal;

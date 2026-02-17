@@ -1,7 +1,9 @@
 import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, icon, toast } from "../utils/ui.js";
 import { escapeHtml, matchesSearch, uid, parseNum, round2, toMoney, formatDateLongISO, buildScheduleDates, splitInstallments, ordinalPago } from "../utils/helpers.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
 import { hasPermission } from "../core/auth.js";
+import { getTenantItems, findTenantItem, pushTenantItem } from "../utils/tenant-data.js";
 
 // Make functions available globally for inline onclick handlers
 window.exportPaymentPlanPDF = exportPaymentPlanPDF;
@@ -18,6 +20,187 @@ window.downloadPaymentPlanAttachment = downloadPaymentPlanAttachment;
 window.removePaymentPlanAttachment = removePaymentPlanAttachment;
 window.togglePlanMenu = togglePlanMenu;
 
+const API_TIMEOUT_MS = 8000;
+const PAYMENT_PLANS_PAGE_SIZE = 20;
+let paymentPlansApiSyncStarted = false;
+let paymentPlansApiSyncCompleted = false;
+let paymentPlansIsLoading = false;
+let paymentPlansPage = 1;
+let paymentPlansLastSearchTerm = "";
+let paymentPlansTotal = 0;
+let paymentPlansLastFetchKey = "";
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function fetchPaymentPlansFromApi({ page = 1, limit = PAYMENT_PLANS_PAGE_SIZE, search = "" } = {}) {
+    const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+        search: String(search || ""),
+    });
+    const response = await fetchWithTimeout(withTenantQuery(`/api/payment-plans?${params.toString()}`), {
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    const pagination = data?.pagination || {};
+    return {
+        items: data.items,
+        total: Number(pagination.total || data.items.length || 0),
+    };
+}
+
+async function upsertPaymentPlanToApi(plan) {
+    const response = await fetchWithTimeout(withTenantQuery("/api/payment-plans"), {
+        method: "POST",
+        headers: tenantHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(plan || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !data?.item) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    return data.item;
+}
+
+async function upsertClientToApi(client) {
+    const response = await fetchWithTimeout(withTenantQuery("/api/clients"), {
+        method: "POST",
+        headers: tenantHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(client || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !data?.item) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    return data.item;
+}
+
+function syncClientInBackground(clientObj) {
+    if (!clientObj?.id) return;
+    upsertClientToApi({
+        id: clientObj.id,
+        name: clientObj.name || "",
+        phone: clientObj.phone || "",
+        email: clientObj.email || "",
+        tripId: clientObj.tripId || "",
+        tripName: clientObj.tripName || "",
+    }).catch((error) => {
+        console.warn("[paymentPlans] auto-client sync warning:", error?.message || error);
+    });
+}
+
+async function deletePaymentPlanFromApi(id) {
+    const response = await fetchWithTimeout(withTenantQuery(`/api/payment-plans?id=${encodeURIComponent(id)}`), {
+        method: "DELETE",
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || data?.deleted !== true) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    return data;
+}
+
+function getActiveRoute() {
+    return document.querySelector(".nav-item.active")?.dataset?.route || "";
+}
+
+function getCurrentSearchTermFromInput() {
+    const input = document.getElementById("globalSearch") || document.getElementById("searchInput");
+    return (input?.value || "").toLowerCase();
+}
+
+function rerenderPaymentPlansView() {
+    if (getActiveRoute() === "payment-plans") {
+        renderPaymentPlans(getCurrentSearchTermFromInput());
+        return;
+    }
+    if (window.render) window.render();
+}
+
+function goToPaymentPlansPage(page) {
+    const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+    paymentPlansPage = safePage;
+    paymentPlansApiSyncStarted = false;
+    rerenderPaymentPlansView();
+}
+
+window.goToPaymentPlansPage = goToPaymentPlansPage;
+
+function syncPaymentPlanInBackground(plan) {
+    Promise.resolve().then(async () => {
+        try {
+            const remoteItem = await upsertPaymentPlanToApi(plan);
+            const idx = state.paymentPlans.findIndex(x => x.id === remoteItem.id);
+            if (idx >= 0) {
+                state.paymentPlans[idx] = remoteItem;
+                saveState();
+                rerenderPaymentPlansView();
+            }
+            paymentPlansApiSyncStarted = false;
+            paymentPlansLastFetchKey = "";
+            ensurePaymentPlansApiSyncOnce();
+        } catch {
+            toast("Guardado local OK. No se pudo sincronizar con la base de datos.");
+        }
+    });
+}
+
+async function ensurePaymentPlansApiSyncOnce() {
+    const fetchKey = `${paymentPlansPage}|${paymentPlansLastSearchTerm}`;
+    if (paymentPlansIsLoading || (paymentPlansApiSyncStarted && paymentPlansLastFetchKey === fetchKey)) return;
+    paymentPlansApiSyncStarted = true;
+    paymentPlansIsLoading = true;
+    paymentPlansLastFetchKey = fetchKey;
+    try {
+        const remote = await fetchPaymentPlansFromApi({
+            page: paymentPlansPage,
+            limit: PAYMENT_PLANS_PAGE_SIZE,
+            search: paymentPlansLastSearchTerm,
+        });
+        if (remote.total > 0) {
+            state.paymentPlans = remote.items;
+            paymentPlansTotal = remote.total;
+        } else if (Array.isArray(state.paymentPlans) && state.paymentPlans.length > 0) {
+            for (const p of state.paymentPlans) {
+                try {
+                    await upsertPaymentPlanToApi(p);
+                } catch {
+                    // ignore per-item sync errors
+                }
+            }
+            const reloaded = await fetchPaymentPlansFromApi({
+                page: paymentPlansPage,
+                limit: PAYMENT_PLANS_PAGE_SIZE,
+                search: paymentPlansLastSearchTerm,
+            });
+            state.paymentPlans = reloaded.items;
+            paymentPlansTotal = reloaded.total;
+        } else {
+            state.paymentPlans = [];
+            paymentPlansTotal = 0;
+        }
+        saveState();
+        paymentPlansApiSyncCompleted = true;
+        rerenderPaymentPlansView();
+    } catch {
+        paymentPlansApiSyncStarted = false;
+    } finally {
+        paymentPlansIsLoading = false;
+    }
+}
+
 function getConfiguredPaymentPlanStatuses() {
     const list = state.settings?.modules?.paymentPlans?.statuses || [];
     if (list.length) return list;
@@ -30,10 +213,24 @@ function getDefaultPaymentPlanStatus() {
 }
 
 export function renderPaymentPlans(searchTerm = "") {
+    if (searchTerm !== paymentPlansLastSearchTerm) {
+        paymentPlansPage = 1;
+        paymentPlansLastSearchTerm = searchTerm;
+        paymentPlansApiSyncStarted = false;
+    }
+    if (!paymentPlansApiSyncCompleted || !paymentPlansApiSyncStarted) {
+        ensurePaymentPlansApiSyncOnce();
+    }
     const canManage = hasPermission("paymentPlans.manage") || hasPermission("*");
     const statuses = getConfiguredPaymentPlanStatuses();
     const getStatus = (p) => statuses.find(s => s.id === p.statusId) || getDefaultPaymentPlanStatus();
-    const rows = state.paymentPlans.filter(p => matchesSearch(p, searchTerm)).map(p => {
+    const localFilteredFallback = state.paymentPlans.filter(p => matchesSearch(p, searchTerm));
+    const plansForTable = paymentPlansApiSyncCompleted ? state.paymentPlans : localFilteredFallback;
+    const totalRows = paymentPlansApiSyncCompleted ? (paymentPlansTotal || plansForTable.length) : plansForTable.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / PAYMENT_PLANS_PAGE_SIZE));
+    if (paymentPlansPage > totalPages) paymentPlansPage = totalPages;
+    const pageStart = (paymentPlansPage - 1) * PAYMENT_PLANS_PAGE_SIZE;
+    const rows = plansForTable.map(p => {
         const status = getStatus(p);
         const hasPdf = !!p.attachmentPdf;
         const pdfBadge = hasPdf ? `<span class="badge pdf" title="Tiene PDF adjunto">PDF</span>` : ``;
@@ -117,8 +314,16 @@ export function renderPaymentPlans(searchTerm = "") {
       <hr/>
       <table class="table">
         <thead><tr><th>Plan</th><th>Moneda</th><th>Inicio</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay planes todavía.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">${paymentPlansIsLoading ? "Cargando planes..." : "No hay planes todavía."}</td></tr>`}</tbody>
       </table>
+      <div class="row" style="margin-top:10px;">
+        <div class="kbd">Mostrando ${totalRows ? pageStart + 1 : 0}-${Math.min(pageStart + PAYMENT_PLANS_PAGE_SIZE, totalRows)} de ${totalRows}</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" ${paymentPlansPage <= 1 ? "disabled" : ""} onclick="window.goToPaymentPlansPage(${paymentPlansPage - 1})">Anterior</button>
+          <div class="kbd">Página ${paymentPlansPage} / ${totalPages}</div>
+          <button class="btn" ${paymentPlansPage >= totalPages ? "disabled" : ""} onclick="window.goToPaymentPlansPage(${paymentPlansPage + 1})">Siguiente</button>
+        </div>
+      </div>
     </div>
   `);
 }
@@ -132,8 +337,8 @@ export function openPaymentPlanModal(existing = null) {
     const paymentStatuses = getConfiguredPaymentPlanStatuses();
     const defaultStatus = getDefaultPaymentPlanStatus();
     const currentStatusId = existing?.statusId || defaultStatus.id;
-    const clientOptions = state.clients.map(c => `<option value="${escapeHtml(c.name)}"></option>`).join("");
-    const tripOptions = state.trips.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
+    const clientOptions = getTenantItems("clients").map(c => `<option value="${escapeHtml(c.name)}"></option>`).join("");
+    const tripOptions = getTenantItems("trips").map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
 
     openModal({
         title: isEditing ? "Editar plan de pago" : "Nuevo plan de pago",
@@ -253,7 +458,7 @@ export function openPaymentPlanModal(existing = null) {
             const clientInputRaw = document.getElementById("pClientSearch").value.trim();
             const normalizedClientInput = normalizeClientName(clientInputRaw);
             let clientObj = normalizedClientInput
-                ? state.clients.find(c => normalizeClientName(c.name) === normalizedClientInput)
+                ? findTenantItem("clients", c => normalizeClientName(c.name) === normalizedClientInput)
                 : null;
 
             if (!clientObj && clientInputRaw) {
@@ -265,13 +470,14 @@ export function openPaymentPlanModal(existing = null) {
                     tripId: "",
                     tripName: ""
                 };
-                state.clients.push(clientObj);
+                clientObj = pushTenantItem("clients", clientObj);
+                syncClientInBackground(clientObj);
                 toast("Cliente creado automáticamente en el módulo Clientes.");
             }
 
             const clientId = clientObj?.id || "";
             const tripId = document.getElementById("pTrip").value || "";
-            const tripObj = state.trips.find(t => t.id === tripId);
+            const tripObj = findTenantItem("trips", t => t.id === tripId);
             const selectedStatusId = document.getElementById("pStatus").value;
             const selectedStatus = paymentStatuses.find(st => st.id === selectedStatusId) || defaultStatus;
 
@@ -322,7 +528,9 @@ export function openPaymentPlanModal(existing = null) {
 
             saveState();
             closeModal();
-            if (window.render) window.render();
+            rerenderPaymentPlansView();
+            toast("Plan guardado.");
+            syncPaymentPlanInBackground(payload);
         }
     });
 
@@ -338,10 +546,10 @@ export function openPaymentPlanModal(existing = null) {
         const normalizeClientName = (v) => (v || "").trim().replace(/\s+/g, " ").toLowerCase();
         const clientSearchValue = document.getElementById("pClientSearch").value.trim();
         const clientObj = clientSearchValue
-            ? state.clients.find(c => normalizeClientName(c.name) === normalizeClientName(clientSearchValue))
+            ? findTenantItem("clients", c => normalizeClientName(c.name) === normalizeClientName(clientSearchValue))
             : null;
         const tripSel = document.getElementById("pTrip").value || "";
-        const tripObj = state.trips.find(t => t.id === tripSel);
+        const tripObj = findTenantItem("trips", t => t.id === tripSel);
 
         const cliente = (clientObj?.name || clientSearchValue || "Cliente");
         const viaje = (tripObj?.name || document.getElementById("pTripDisplay").value.trim() || "Viaje");
@@ -446,9 +654,21 @@ export function deletePaymentPlan(id) {
         toast("No tienes permiso para eliminar planes.");
         return;
     }
+    if (!confirm("¿Eliminar plan de pago?")) return;
     state.paymentPlans = state.paymentPlans.filter(x => x.id !== id);
     saveState();
-    if (window.render) window.render();
+    rerenderPaymentPlansView();
+    toast("Plan eliminado.");
+    Promise.resolve().then(async () => {
+        try {
+            await deletePaymentPlanFromApi(id);
+            paymentPlansApiSyncStarted = false;
+            paymentPlansLastFetchKey = "";
+            ensurePaymentPlansApiSyncOnce();
+        } catch {
+            toast("Se eliminó localmente, pero falló eliminar en la base de datos.");
+        }
+    });
 }
 
 export function viewPaymentPlan(id) {
@@ -1108,7 +1328,8 @@ export function attachPaymentPlan(id) {
                 attachedAt: new Date().toISOString()
             };
             saveState();
-            if (window.render) window.render();
+            rerenderPaymentPlansView();
+            syncPaymentPlanInBackground(p);
             toast("PDF adjuntado ✅");
         };
         reader.readAsDataURL(file);
@@ -1145,7 +1366,8 @@ export function generateAndAttachPaymentPlanPDF(id) {
             };
             saveState();
             root.innerHTML = "";
-            if (window.render) window.render();
+            rerenderPaymentPlansView();
+            syncPaymentPlanInBackground(p);
             toast("PDF generado y adjuntado ✅");
         })
         .catch(err => {
@@ -1176,6 +1398,7 @@ export function removePaymentPlanAttachment(id) {
     if (p) {
         p.attachmentPdf = null;
         saveState();
-        if (window.render) window.render();
+        rerenderPaymentPlansView();
+        syncPaymentPlanInBackground(p);
     }
 }

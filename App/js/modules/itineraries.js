@@ -1,8 +1,11 @@
 import { state, saveState } from "../core/state.js";
-import { setContent, renderModuleToolbar, openModal, closeModal } from "../utils/ui.js";
+import { setContent, renderModuleToolbar, openModal, closeModal, icon } from "../utils/ui.js";
 import { escapeHtml, escapeAttr, matchesSearch, uid, parseNum, toMoney, formatDateLongISO, fileToDataUrl } from "../utils/helpers.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
+import { getTenantItems, findTenantItem, pushTenantItem, removeTenantItems, upsertTenantItem, replaceTenantItems } from "../utils/tenant-data.js";
 
 window.editItinerary = editItinerary;
+window.duplicateItinerary = duplicateItinerary;
 window.deleteItinerary = deleteItinerary;
 window.viewItinerary = viewItinerary;
 window.openItineraryModal = openItineraryModal;
@@ -10,46 +13,223 @@ window.exportItineraryPDF = exportItineraryPDF;
 window.previewItineraryPDF = previewItineraryPDF;
 window.loadPortugalDemoItinerary = loadPortugalDemoItinerary;
 window.loadMilanMadridDemoItinerary = loadMilanMadridDemoItinerary;
+window.toggleItineraryMenu = toggleItineraryMenu;
+window.runItineraryAction = runItineraryAction;
 
 let itineraryPdfBusy = false;
+const API_TIMEOUT_MS = 8000;
+let itinerariesApiSyncStarted = false;
+let itinerariesApiSyncCompleted = false;
+let itinerariesIsLoading = false;
+let itinerariesLastFetchKey = "";
+
+function getConfiguredItineraryStatuses() {
+    const itineraryList = state.settings?.modules?.itineraries?.statuses || [];
+    if (itineraryList.length) return itineraryList;
+    const quotationList = state.settings?.modules?.quotations?.statuses || [];
+    if (quotationList.length) return quotationList;
+    return [{ id: "quo_draft", label: "Borrador", color: "#64748b", isDefault: true, isFinal: false, order: 1 }];
+}
+
+function getDefaultItineraryStatus() {
+    const statuses = getConfiguredItineraryStatuses();
+    return statuses.find(s => s.isDefault) || statuses[0];
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function fetchItinerariesFromApi({ search = "" } = {}) {
+    const params = new URLSearchParams({ page: "1", limit: "200", search: String(search || "") });
+    const response = await fetchWithTimeout(withTenantQuery(`/api/itineraries?${params.toString()}`), {
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    return { items: data.items };
+}
+
+async function upsertItineraryToApi(itinerary) {
+    const response = await fetchWithTimeout(withTenantQuery("/api/itineraries"), {
+        method: "POST",
+        headers: tenantHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(itinerary || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !data?.item) throw new Error(data?.error || `HTTP ${response.status}`);
+    return data.item;
+}
+
+async function deleteItineraryFromApi(id) {
+    const response = await fetchWithTimeout(withTenantQuery(`/api/itineraries?id=${encodeURIComponent(id)}`), {
+        method: "DELETE",
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+    return true;
+}
+
+async function syncItinerariesFromApi(searchTerm = "") {
+    const key = String(searchTerm || "").toLowerCase().trim();
+    if (itinerariesIsLoading || (itinerariesApiSyncStarted && itinerariesLastFetchKey === key)) return;
+    itinerariesApiSyncStarted = true;
+    itinerariesIsLoading = true;
+    itinerariesLastFetchKey = key;
+    try {
+        const remote = await fetchItinerariesFromApi({ search: key });
+        replaceTenantItems("itineraries", remote.items);
+        saveState();
+        itinerariesApiSyncCompleted = true;
+        if (window.render) window.render();
+    } catch (error) {
+        console.warn("[itineraries] sync warning:", error?.message || error);
+    } finally {
+        itinerariesApiSyncStarted = false;
+        itinerariesIsLoading = false;
+    }
+}
+
+function syncItineraryInBackground(payload) {
+    upsertItineraryToApi(payload)
+        .then((remoteItem) => {
+            upsertTenantItem("itineraries", remoteItem);
+            saveState();
+            if (window.render) window.render();
+        })
+        .catch((error) => {
+            console.warn("[itineraries] upsert warning:", error?.message || error);
+        });
+}
 
 export function renderItineraries(searchTerm = "") {
-    const rows = state.itineraries.filter(i => matchesSearch(i, searchTerm)).map(i => `
-    <tr>
-      <td><strong>${escapeHtml(i.title)}</strong><div class="kbd">${escapeHtml(i.tripName || i.tripDisplay || "")}</div></td>
-      <td>${(i.days || []).length}</td>
-      <td>${escapeHtml(i.updatedAt || "")}</td>
-      <td>
-        <button class="btn" onclick="window.viewItinerary('${i.id}')">Ver</button>
-        <button class="btn" onclick="window.editItinerary('${i.id}')">Editar</button>
-        <button class="btn" onclick="window.previewItineraryPDF('${i.id}')">Vista PDF</button>
-        <button class="btn" onclick="window.exportItineraryPDF('${i.id}')">Descargar PDF</button>
-        <button class="btn danger" onclick="window.deleteItinerary('${i.id}')">Eliminar</button>
-      </td>
-    </tr>
-  `).join("");
+    if (!itinerariesApiSyncCompleted || !itinerariesApiSyncStarted) {
+        syncItinerariesFromApi(searchTerm);
+    }
+    const itineraries = getTenantItems("itineraries");
+    const filteredCount = itineraries.filter(i => matchesSearch(i, searchTerm)).length;
+    const rows = itineraries.filter(i => matchesSearch(i, searchTerm)).map(i => {
+        const hasTotal = Number.isFinite(Number(i.total)) && Number(i.total) > 0;
+        const totalLabel = hasTotal ? toMoney(Number(i.total), i.currency || "USD") : "—";
+        const menuItems = `
+          <button class="menu-item" onclick="window.runItineraryAction('preview','${i.id}')">
+            <span class="mi-ic">${icon('eye')}</span>
+            <span class="mi-tx">Ver PDF</span>
+          </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="window.runItineraryAction('download','${i.id}')">
+            <span class="mi-ic">${icon('download')}</span>
+            <span class="mi-tx">Descargar (PDF)</span>
+          </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item" onclick="window.duplicateItinerary('${i.id}')">
+            <span class="mi-ic">${icon('copy')}</span>
+            <span class="mi-tx">Duplicar</span>
+          </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item danger" onclick="window.deleteItinerary('${i.id}')">
+            <span class="mi-ic">${icon('trash')}</span>
+            <span class="mi-tx">Eliminar</span>
+          </button>
+        `;
+        return `
+          <tr>
+            <td>
+              <div class="plan-cell">
+                <div class="plan-main">
+                  <strong>${escapeHtml(i.destination || i.title || "Itinerario")}</strong>
+                </div>
+                <div class="kbd">${escapeHtml(i.clientName || i.clientDisplay || "Cliente")}</div>
+                ${i.statusLabel ? `<div style="margin-top:6px;"><span class="status-chip">${escapeHtml(i.statusLabel)}</span></div>` : ""}
+              </div>
+            </td>
+            <td>${escapeHtml(i.datesText || "")}</td>
+            <td>${escapeHtml(totalLabel)}</td>
+            <td>
+              <div class="actions compact">
+                <button class="icon-btn" onclick="window.viewItinerary('${i.id}')" title="Ver">${icon('eye')}</button>
+                <button class="icon-btn" onclick="window.editItinerary('${i.id}')" title="Editar">${icon('edit')}</button>
+                <div class="action-menu" data-menu="${i.id}">
+                  <button class="icon-btn menu-trigger" onclick="window.toggleItineraryMenu(event,'${i.id}')">${icon('dots')}</button>
+                  <div class="menu-pop" id="iti-menu-${i.id}" hidden>
+                    ${menuItems}
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        `;
+    }).join("");
 
     setContent(`
     <div class="card">
       ${renderModuleToolbar("itineraries",
-        `<div><h2 style="margin:0;">Itinerarios</h2><div class="kbd">Modelo simple editable (tipo Milan-Madrid): portada limpia + páginas de días + incluye/no incluye.</div></div>`,
-        `<div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="btn" onclick="window.loadMilanMadridDemoItinerary()">Cargar demo Milan-Madrid</button>
-          <button class="btn" onclick="window.loadPortugalDemoItinerary()">Cargar demo Portugal</button>
-          <button class="btn primary" onclick="window.openItineraryModal()">+ Nuevo itinerario</button>
-        </div>`
+        `<div><h2 style="margin:0;">Itinerarios</h2><div class="kbd">Crea itinerarios detallados con formato visual de cotización.</div></div>`,
+        `<button class="btn primary" onclick="window.openItineraryModal()">+ Nuevo itinerario</button>`
     )}
       <hr/>
       <table class="table">
-        <thead><tr><th>Itinerario</th><th>Días</th><th>Actualizado</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay itinerarios todavía.</td></tr>`}</tbody>
+        <thead><tr><th>Destino</th><th>Fechas</th><th>Total</th><th>Acciones</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">${itinerariesIsLoading ? "Cargando itinerarios..." : "No hay itinerarios todavía."}</td></tr>`}</tbody>
       </table>
+      <div class="row" style="margin-top:10px;">
+        <div class="kbd">Mostrando ${filteredCount ? 1 : 0}-${filteredCount} de ${filteredCount}</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" disabled>Anterior</button>
+          <div class="kbd">Página 1 / 1</div>
+          <button class="btn" disabled>Siguiente</button>
+        </div>
+      </div>
     </div>
   `);
 }
 
+function toggleItineraryMenu(e, id) {
+    e.stopPropagation();
+    const trigger = e.target?.closest(".menu-trigger");
+    const menu = document.getElementById(`iti-menu-${id}`);
+    if (!menu) return;
+    const wasOpen = !menu.hidden;
+    closeItineraryMenus();
+    if (wasOpen) return;
+    menu.hidden = false;
+    menu.style.display = "block";
+    const actionMenu = trigger?.closest(".action-menu");
+    if (actionMenu) actionMenu.classList.add("menu-open");
+    const row = trigger?.closest("tr");
+    if (row) row.classList.add("menu-open");
+}
+
+function closeItineraryMenus() {
+    document.querySelectorAll("[id^='iti-menu-']").forEach(el => {
+        el.hidden = true;
+        el.style.display = "none";
+    });
+    document.querySelectorAll(".action-menu.menu-open").forEach(el => el.classList.remove("menu-open"));
+    document.querySelectorAll(".table tbody tr.menu-open").forEach(el => el.classList.remove("menu-open"));
+}
+
+function runItineraryAction(action, id) {
+    closeItineraryMenus();
+    if (action === "preview") previewItineraryPDF(id);
+    else exportItineraryPDF(id);
+}
+
+document.addEventListener("click", (e) => {
+    if (!e.target.closest(".action-menu")) closeItineraryMenus();
+});
+
 export function loadPortugalDemoItinerary() {
-    const existing = state.itineraries.find(x => x.id === "iti_portugal_demo");
+    const existing = findTenantItem("itineraries", x => x.id === "iti_portugal_demo");
     const payload = {
         id: "iti_portugal_demo",
         title: "TODO PORTUGAL 2026",
@@ -154,15 +334,16 @@ export function loadPortugalDemoItinerary() {
     };
 
     if (existing) Object.assign(existing, payload);
-    else state.itineraries.push(payload);
+    else pushTenantItem("itineraries", payload);
 
     saveState();
     if (window.render) window.render();
+    syncItineraryInBackground(payload);
     setTimeout(() => previewItineraryPDF(payload.id), 120);
 }
 
 export function loadMilanMadridDemoItinerary() {
-    const existing = state.itineraries.find(x => x.id === "iti_milan_madrid_demo");
+    const existing = findTenantItem("itineraries", x => x.id === "iti_milan_madrid_demo");
     const payload = {
         id: "iti_milan_madrid_demo",
         title: "DE MILAN A MADRID",
@@ -236,349 +417,486 @@ export function loadMilanMadridDemoItinerary() {
     };
 
     if (existing) Object.assign(existing, payload);
-    else state.itineraries.push(payload);
+    else pushTenantItem("itineraries", payload);
 
     saveState();
     if (window.render) window.render();
+    syncItineraryInBackground(payload);
     setTimeout(() => previewItineraryPDF(payload.id), 120);
 }
 
 export function openItineraryModal(existing = null) {
-    const tripOptions = state.trips.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
-    const theme = existing?.theme || {};
-    const cover = existing?.cover || {};
+    const isEditing = !!existing;
+    const MAX_ITINERARY_IMAGES = 6;
+    const statuses = getConfiguredItineraryStatuses();
+    const defaultStatus = getDefaultItineraryStatus();
+    const currentStatusId = existing?.statusId || defaultStatus.id;
+    const clients = getTenantItems("clients");
+    const clientOptions = clients.map(c => `<option value="${escapeHtml(c.name || c.clientDisplay || "")}"></option>`).join("");
+    const parseISODate = (iso) => {
+        const [y, m, d] = String(iso || "").split("-").map(Number);
+        if (!y || !m || !d) return null;
+        return { y, m, d };
+    };
+    const toDateChip = (startIso, endIso) => {
+        const start = parseISODate(startIso);
+        const end = parseISODate(endIso);
+        if (!start || !end) return "";
+        const mo = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+        return `${start.d} ${mo[start.m - 1]} - ${end.d} ${mo[end.m - 1]} ${end.y}`;
+    };
+    const toNights = (startIso, endIso) => {
+        const start = parseISODate(startIso);
+        const end = parseISODate(endIso);
+        if (!start || !end) return "";
+        const startUTC = Date.UTC(start.y, start.m - 1, start.d);
+        const endUTC = Date.UTC(end.y, end.m - 1, end.d);
+        const diff = endUTC - startUTC;
+        const nights = Math.round(diff / 86400000);
+        return nights >= 0 ? `${nights} noches` : "";
+    };
+    const renderItineraryDayRow = (day = {}, idx = 0) => `
+      <div class="q-it-day-item card" data-day-index="${idx}" style="margin-top:10px; padding:10px;">
+        <div class="grid">
+          <div class="field col-3">
+            <label>Día</label>
+            <input class="q-it-day-label" value="${escapeHtml(day.day || `DÍA ${idx + 1}`)}" />
+          </div>
+          <div class="field col-9">
+            <label>Título</label>
+            <input class="q-it-day-title" value="${escapeHtml(day.title || "")}" placeholder="Ej: AMÉRICA - MILÁN" />
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field col-8">
+            <label>Texto del día</label>
+            <textarea class="q-it-day-text" rows="4" placeholder="Describe las actividades del día...">${escapeHtml(day.text || day.content || "")}</textarea>
+          </div>
+          <div class="field col-4">
+            <label>Comidas incluidas</label>
+            <input class="q-it-day-meals" value="${escapeHtml(day.meals || "")}" placeholder="Ej: Desayuno" />
+            <label style="margin-top:8px;">Imagen del día</label>
+            <input class="q-it-day-image-input" type="file" accept="image/*" />
+            <input class="q-it-day-image-value" type="hidden" value="${escapeAttr(day.image || "")}" />
+            <div class="q-it-day-preview" style="margin-top:6px;">
+              ${day.image ? `<img class="q-it-day-image-preview" src="${escapeAttr(day.image)}" style="width:100%; max-width:180px; height:90px; object-fit:cover; border:1px solid rgba(255,255,255,.18); border-radius:8px;" />` : `<div class="kbd">Sin imagen</div>`}
+            </div>
+          </div>
+        </div>
+        <div class="q-it-day-actions" style="margin-top:8px;">
+          <button type="button" class="btn danger q-it-day-remove">Quitar día</button>
+        </div>
+      </div>
+    `;
+
+    const initialDays = Array.isArray(existing?.days) && existing.days.length ? existing.days : [{}];
+    let currentImages = Array.isArray(existing?.galleryImages) ? [...existing.galleryImages] : [];
+    const inferredAdults = Number.isFinite(Number(existing?.adults)) ? Number(existing.adults) : 2;
+    const inferredChildren = Number.isFinite(Number(existing?.children)) ? Number(existing.children) : 0;
+    const datesText = existing?.datesText || toDateChip(existing?.startDate, existing?.endDate);
+    const duration = existing?.duration || toNights(existing?.startDate, existing?.endDate);
+    const paxText = existing?.paxText || `${inferredAdults} adultos${inferredChildren ? `, ${inferredChildren} niños` : ""}`;
+
+    const renderImageThumbs = () => {
+        if (!currentImages.length) return `<div class="kbd">Sin imágenes cargadas.</div>`;
+        return currentImages.map((src, idx) => `
+          <div class="card" style="padding:6px; width:132px;">
+            <img src="${escapeAttr(src)}" style="width:100%; height:78px; object-fit:cover; border-radius:8px;" />
+            <button type="button" class="btn danger" data-i-remove="${idx}" style="margin-top:6px; width:100%;">Quitar</button>
+          </div>
+        `).join("");
+    };
 
     openModal({
-        title: existing ? "Editar itinerario" : "Nuevo itinerario",
+        title: isEditing ? "Editar itinerario" : "Nuevo itinerario",
         bodyHtml: `
-      <div class="field"><label>Título</label><input id="iTitle" value="${escapeHtml(existing?.title || "Itinerario de Viaje")}" /></div>
-
-      <div class="grid">
-        <div class="field col-6">
-          <label>Viaje (opcional)</label>
-          <select id="iTrip"><option value="">(Sin seleccionar)</option>${tripOptions}</select>
+      <div class="form-layout form-layout--quotation">
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">1</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Cliente</h4>
+              <p class="form-section__hint">Empieza por el cliente. Si no existe, se crea al guardar.</p>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-12">
+              <label>Cliente (buscar o crear) <span class="req">*</span></label>
+              <input id="iClientSearch" list="iClientList" value="${escapeHtml(existing?.clientName || existing?.clientDisplay || "")}" placeholder="Escribe para buscar. Si no existe, se creará al guardar." />
+              <datalist id="iClientList">${clientOptions}</datalist>
+              <div class="kbd" style="margin-top:6px;">Si el nombre no existe en clientes, se agrega automáticamente.</div>
+            </div>
+          </div>
         </div>
-        <div class="field col-6">
-          <label>Nombre del viaje (si no usas select)</label>
-          <input id="iTripDisplay" value="${escapeHtml(existing?.tripDisplay || "")}" placeholder="Ej: Dubai Experience 2026" />
+
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">2</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Datos del Viaje</h4>
+              <p class="form-section__hint">Destino, fechas y pasajeros para crear el itinerario.</p>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-6">
+              <label>Destino <span class="req">*</span></label>
+              <input id="iDest" value="${escapeHtml(existing?.destination || existing?.title || "")}" placeholder="Ej: Punta Cana" />
+            </div>
+            <div class="field col-6">
+              <label>Fecha Documento</label>
+              <input id="iDocDate" type="date" value="${escapeHtml(existing?.docDate || new Date().toISOString().slice(0, 10))}" />
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-6">
+              <label>Estado</label>
+              <select id="iStatus">
+                ${statuses.map(st => `<option value="${escapeHtml(st.id)}" ${st.id === currentStatusId ? "selected" : ""}>${escapeHtml(st.label)}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div class="grid">
+            <div class="field col-6"><label>Llegada <span class="req">*</span></label><input id="iStart" type="date" value="${escapeHtml(existing?.startDate || "")}" /></div>
+            <div class="field col-6"><label>Salida <span class="req">*</span></label><input id="iEnd" type="date" value="${escapeHtml(existing?.endDate || "")}" /></div>
+          </div>
+          <div class="grid">
+            <div class="field col-3"><label>Chip Fechas (auto)</label><input id="iDatesText" value="${escapeHtml(datesText || "")}" readonly /></div>
+            <div class="field col-3"><label>Duración (auto)</label><input id="iDuration" value="${escapeHtml(duration || "")}" readonly /></div>
+            <div class="field col-3"><label>Adultos</label><input id="iAdults" type="number" min="0" value="${inferredAdults}" /></div>
+            <div class="field col-3"><label>Niños</label><input id="iChildren" type="number" min="0" value="${inferredChildren}" /></div>
+          </div>
+          <div class="field">
+            <label>Texto Pasajeros (opcional)</label>
+            <input id="iPaxText" value="${escapeHtml(paxText)}" placeholder="Ej: 2 adultos, 1 niño (pedrito)" />
+          </div>
         </div>
-      </div>
 
-      <div class="grid">
-        <div class="field col-6"><label>Salida (fecha)</label><input id="iStart" type="date" value="${escapeHtml(existing?.startDate || "")}" /></div>
-        <div class="field col-6"><label>Llegada (fecha)</label><input id="iEnd" type="date" value="${escapeHtml(existing?.endDate || "")}" /></div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-6"><label>Inversión</label><input id="iPrice" value="${escapeHtml(existing?.price || "")}" placeholder="Ej: 3799" /></div>
-        <div class="field col-6"><label>Inversión con extensión (opcional)</label><input id="iPriceExt" value="${escapeHtml(existing?.priceExt || "")}" placeholder="Ej: 4299" /></div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-6"><label>Reserva (texto)</label><input id="iDepositText" value="${escapeHtml(existing?.depositText || "RESERVA SOLO CON $250")}" /></div>
-        <div class="field col-6"><label>Link (Regístrate aquí)</label><input id="iLink" value="${escapeHtml(existing?.ctaLink || "")}" placeholder="Pega el link" /></div>
-      </div>
-
-      <div class="field"><label>Overview (resumen principal)</label>
-        <textarea id="iOverview" placeholder="Ej: A group journey to Dubai...">${escapeHtml(existing?.overview || "")}</textarea>
-      </div>
-
-      <div class="grid">
-        <div class="field col-6"><label>Aerolínea ida</label><input id="iAirlineOut" value="${escapeHtml(existing?.flightInfo?.airlineOut || "")}" placeholder="Ej: Turkish Airlines" /></div>
-        <div class="field col-6"><label>Aerolínea regreso</label><input id="iAirlineBack" value="${escapeHtml(existing?.flightInfo?.airlineBack || "")}" placeholder="Ej: Turkish Airlines" /></div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-6"><label>Ciudades de salida (1 por línea)</label>
-          <textarea id="iDepartureCities" placeholder="New York&#10;Miami">${escapeHtml((existing?.flightInfo?.departureCities || []).join("\n"))}</textarea>
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">4</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Imágenes</h4>
+              <p class="form-section__hint">Opcional. Puedes cargar y quitar fotos.</p>
+            </div>
+          </div>
+          <div class="field">
+            <label>Fotos del Hospedaje/Destino (Max ${MAX_ITINERARY_IMAGES})</label>
+            <input type="file" id="iImagesInput" multiple accept="image/*" />
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:8px;">
+              <div class="kbd">Puedes quitar y volver a cargar fotos.</div>
+              <button type="button" class="btn ghost" id="iImagesClearAll">Quitar todas</button>
+            </div>
+            <div id="iImagesPreview" style="display:flex; gap:10px; margin-top:10px; overflow-x:auto; flex-wrap:wrap;">
+              ${renderImageThumbs()}
+            </div>
+          </div>
+          <div class="field">
+            <label>Imagen portada</label>
+            <input id="iCoverImageFile" type="file" accept="image/*" />
+            <input id="iCoverImage" type="hidden" value="${escapeAttr(existing?.coverImage || "")}" />
+            <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+              <button type="button" class="btn ghost" id="iCoverImageClear">Quitar portada</button>
+            </div>
+            <div style="margin-top:8px;">
+              ${existing?.coverImage ? `<img id="iCoverPreview" src="${escapeAttr(existing.coverImage)}" style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid rgba(255,255,255,.18);" />` : `<div id="iCoverPreview" class="kbd">Sin imagen seleccionada.</div>`}
+            </div>
+          </div>
         </div>
-        <div class="field col-6"><label>Emiratos del tour (1 por línea)</label>
-          <textarea id="iEmirates" placeholder="Dubai&#10;Abu Dhabi&#10;Sharjah">${escapeHtml((existing?.emirates || []).join("\n"))}</textarea>
+
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">5</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Contenido del Paquete</h4>
+              <p class="form-section__hint">Personaliza textos de transporte, hotel, traslados y condiciones.</p>
+            </div>
+          </div>
+          <div class="field"><label>Transporte y Vuelos</label><textarea id="iTransport" rows="3">${escapeHtml(existing?.tTransport || "")}</textarea></div>
+          <div class="field"><label>Alojamiento</label><textarea id="iLodging" rows="3">${escapeHtml(existing?.tLodging || "")}</textarea></div>
+          <div class="field"><label>Traslados</label><textarea id="iTransfers" rows="2">${escapeHtml(existing?.tTransfers || "")}</textarea></div>
+          <div class="grid">
+            <div class="field col-6"><label>Incluye</label><textarea id="iIncludes" rows="4">${escapeHtml((existing?.includes || []).join("\n"))}</textarea></div>
+            <div class="field col-6"><label>No Incluye</label><textarea id="iExcludes" rows="4">${escapeHtml((existing?.excludes || []).join("\n"))}</textarea></div>
+          </div>
+          <div class="field"><label>Condiciones</label><textarea id="iTerms" rows="2">${escapeHtml((existing?.terms || []).join("\n"))}</textarea></div>
+          <div class="field">
+            <label>Link de reservación (pago)</label>
+            <input id="iLink" value="${escapeHtml(existing?.ctaLink || "")}" placeholder="https://..." />
+            <div class="kbd" style="margin-top:6px;">En el PDF se mostrará como: "Haz clic aquí para reservar".</div>
+          </div>
         </div>
-      </div>
 
-      <div class="grid">
-        <div class="field col-6"><label>Incluye (1 por línea)</label>
-          <textarea id="iIncludes" placeholder="Ej: Boletos aéreos...">${escapeHtml((existing?.includes || []).join("\n"))}</textarea>
+        <div class="form-section">
+          <div class="form-section__head">
+            <span class="form-section__index">6</span>
+            <div class="form-section__meta">
+              <h4 class="form-section__title">Itinerario por Días (Opcional)</h4>
+              <p class="form-section__hint">Si activas esta opción, el PDF agrega sección día a día con imagen.</p>
+            </div>
+          </div>
+          <div class="field">
+            <label style="display:flex; align-items:center; gap:8px;">
+              <input id="iEnableItinerary" type="checkbox" ${(existing?.itineraryEnabled ?? true) ? "checked" : ""} />
+              Habilitar itinerario por días en PDF
+            </label>
+          </div>
+          <div id="iItineraryWrap" style="${(existing?.itineraryEnabled ?? true) ? "" : "display:none;"}">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+              <div class="kbd">Añade los días que necesites. Cada día acepta 1 imagen.</div>
+              <button type="button" class="btn" id="iAddItineraryDay">+ Agregar día</button>
+            </div>
+            <div id="iItineraryList">
+              ${(initialDays.length ? initialDays : [{}]).map((day, idx) => renderItineraryDayRow(day, idx)).join("")}
+            </div>
+          </div>
         </div>
-        <div class="field col-6"><label>No incluye (1 por línea)</label>
-          <textarea id="iExcludes" placeholder="Ej: Seguro de asistencia...">${escapeHtml((existing?.excludes || []).join("\n"))}</textarea>
-        </div>
-      </div>
-
-      <div class="field"><label>Términos y condiciones (1 por línea)</label>
-        <textarea id="iTerms" placeholder="Ej: Pasaporte vigente 6 meses...">${escapeHtml((existing?.terms || []).join("\n"))}</textarea>
-      </div>
-
-      <hr/>
-      <div class="kbd">Portada editable (más simple que el PDF original, como pediste).</div>
-
-      <div class="grid">
-        <div class="field col-4"><label>Texto portada 1</label><input id="iCoverTop" value="${escapeHtml(cover.top || "THE DANCE FAMILY GROUP")}" /></div>
-        <div class="field col-4"><label>Texto portada 2</label><input id="iCoverMiddle" value="${escapeHtml(cover.middle || "EXPERIENCE")}" /></div>
-        <div class="field col-4"><label>Texto portada 3</label><input id="iCoverBottom" value="${escapeHtml(cover.bottom || "TRAVEL ITINERARY")}" /></div>
-      </div>
-
-      <div class="grid">
-        <div class="field col-4"><label>Color principal</label><input id="iPrimaryColor" type="color" value="${escapeAttr(theme.primary || "#0b3d91")}" /></div>
-        <div class="field col-4"><label>Color secundario</label><input id="iSecondaryColor" type="color" value="${escapeAttr(theme.secondary || "#1d63c7")}" /></div>
-        <div class="field col-4"><label>Color acento</label><input id="iAccentColor" type="color" value="${escapeAttr(theme.accent || "#f3c61b")}" /></div>
-      </div>
-
-      <div class="field"><label>Imagen portada</label>
-        <input id="iCoverImageFile" type="file" accept="image/*" />
-        <input id="iCoverImage" type="hidden" value="${escapeAttr(existing?.coverImage || "")}" />
-        <div style="margin-top:8px;">
-          ${existing?.coverImage ? `<img id="iCoverPreview" src="${escapeAttr(existing.coverImage)}" style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid rgba(0,0,0,.12);"/>` : `<div id="iCoverPreview" class="kbd">Sin imagen seleccionada.</div>`}
-        </div>
-      </div>
-
-      <div class="field"><label>Galería del itinerario</label>
-        <input id="iGalleryFile" type="file" accept="image/*" multiple />
-        <div class="kbd">Puedes usar estas imágenes como apoyo general del documento.</div>
-        <textarea id="iGallery" placeholder="DataURL por línea (se llena automático al subir imágenes)">${escapeHtml((existing?.galleryImages || []).join("\n"))}</textarea>
-      </div>
-
-      <div class="field">
-        <label>Fotos por día (sin tocar JSON manual)</label>
-        <input id="iDayImagesFile" type="file" accept="image/*" multiple />
-        <div class="row" style="margin-top:8px;">
-          <button class="btn" id="iApplyDayImages" type="button">Aplicar fotos a días (en orden)</button>
-          <span class="kbd">La primera foto se asigna al día 1, la segunda al día 2, etc.</span>
-        </div>
-      </div>
-
-      <div class="field"><label>Días (JSON simple)</label>
-        <textarea id="iDays" placeholder='[{"day":"DAY 1","title":"Arrival in Dubai","time":"8:00 AM","content":"...","meals":"Breakfast","image":"data:image/..."}]'>${escapeHtml(JSON.stringify(existing?.days || [], null, 2))}</textarea>
-      </div>
-
-      <div class="row">
-        <button class="btn" id="iGenerate">Generar texto itinerario</button>
-        <span class="kbd">Mantiene estructura estilo Dubai: overview + flights + day-by-day.</span>
-      </div>
-
-      <div class="field"><label>Texto generado</label>
-        <textarea id="iText" placeholder="Aquí sale el itinerario...">${escapeHtml(existing?.text || "")}</textarea>
       </div>
     `,
         onSave: () => {
-            const tripId = document.getElementById("iTrip").value || "";
-            const tripObj = state.trips.find(t => t.id === tripId);
+            const gv = (id) => (document.getElementById(id)?.value ?? "");
+            const gvt = (id) => gv(id).trim();
 
-            const title = document.getElementById("iTitle").value.trim() || "Itinerario de Viaje";
-            const tripDisplay = document.getElementById("iTripDisplay").value.trim();
-            const startDate = document.getElementById("iStart").value || "";
-            const endDate = document.getElementById("iEnd").value || "";
-            const price = parseNum(document.getElementById("iPrice").value);
-            const priceExt = parseNum(document.getElementById("iPriceExt").value);
-            const depositText = document.getElementById("iDepositText").value.trim();
-            const ctaLink = document.getElementById("iLink").value.trim();
-            const overview = document.getElementById("iOverview").value.trim();
+            const normalizeName = (v) => (v || "").trim().replace(/\s+/g, " ").toLowerCase();
+            const clientInput = gvt("iClientSearch");
+            const normalizedClientInput = normalizeName(clientInput);
+            let clientObj = normalizedClientInput
+                ? findTenantItem("clients", c => normalizeName(c.name) === normalizedClientInput)
+                : null;
+            if (!clientObj && clientInput) {
+                clientObj = pushTenantItem("clients", { id: uid("cli"), name: clientInput, phone: "", email: "", tripId: "", tripName: "" });
+            }
 
-            const includes = splitLines(document.getElementById("iIncludes").value);
-            const excludes = splitLines(document.getElementById("iExcludes").value);
-            const terms = splitLines(document.getElementById("iTerms").value);
-            const emirates = splitLines(document.getElementById("iEmirates").value);
-            const galleryImages = splitLines(document.getElementById("iGallery").value);
-            const departureCities = splitLines(document.getElementById("iDepartureCities").value);
+            const destination = gvt("iDest");
+            const startDate = gv("iStart");
+            const endDate = gv("iEnd");
+            if (!clientInput) { alert("Completa el cliente."); return; }
+            if (!destination) { alert("Completa el destino."); return; }
+            if (!startDate || !endDate) { alert("Completa llegada y salida."); return; }
 
-            const coverImage = document.getElementById("iCoverImage").value || "";
-
-            let days = [];
-            try { days = JSON.parse(document.getElementById("iDays").value || "[]"); }
-            catch { alert("El JSON de días no es válido."); return; }
-
-            const text = document.getElementById("iText").value.trim();
+            const selectedStatusId = gv("iStatus");
+            const selectedStatus = statuses.find(st => st.id === selectedStatusId) || defaultStatus;
+            const adults = parseNum(gv("iAdults"));
+            const children = parseNum(gv("iChildren"));
+            const itineraryEnabled = !!document.getElementById("iEnableItinerary")?.checked;
+            const days = itineraryEnabled
+                ? Array.from(document.querySelectorAll("#iItineraryList .q-it-day-item"))
+                    .map((row, idx) => {
+                        const getVal = (selector) => ((row.querySelector(selector)?.value || "").trim());
+                        const day = getVal(".q-it-day-label") || `DÍA ${idx + 1}`;
+                        const title = getVal(".q-it-day-title");
+                        const text = getVal(".q-it-day-text");
+                        const meals = getVal(".q-it-day-meals");
+                        const image = row.querySelector(".q-it-day-image-value")?.value || "";
+                        return { day, title, content: text, text, meals, image };
+                    })
+                    .filter(item => item.title || item.text || item.meals || item.image)
+                : [];
 
             const payload = {
                 id: existing?.id || uid("iti"),
-                title,
-                tripId,
-                tripName: tripObj?.name || "",
-                tripDisplay,
+                clientId: clientObj?.id || "",
+                clientName: clientObj?.name || "",
+                clientDisplay: clientInput,
+                statusId: selectedStatus?.id || "",
+                statusLabel: selectedStatus?.label || "",
+                destination,
+                title: destination,
+                tripId: existing?.tripId || "",
+                tripName: existing?.tripName || "",
+                tripDisplay: destination,
+                docDate: gv("iDocDate"),
                 startDate,
                 endDate,
-                price,
-                priceExt,
-                depositText,
-                ctaLink,
-                overview,
-                includes,
-                excludes,
-                terms,
-                emirates,
-                galleryImages,
-                coverImage,
-                cover: {
-                    top: document.getElementById("iCoverTop").value.trim(),
-                    middle: document.getElementById("iCoverMiddle").value.trim(),
-                    bottom: document.getElementById("iCoverBottom").value.trim(),
-                },
-                theme: {
-                    primary: document.getElementById("iPrimaryColor").value || "#0b3d91",
-                    secondary: document.getElementById("iSecondaryColor").value || "#1d63c7",
-                    accent: document.getElementById("iAccentColor").value || "#f3c61b",
-                },
-                flightInfo: {
-                    airlineOut: document.getElementById("iAirlineOut").value.trim(),
-                    airlineBack: document.getElementById("iAirlineBack").value.trim(),
-                    departureCities,
-                },
+                datesText: gv("iDatesText"),
+                duration: gv("iDuration"),
+                adults,
+                children,
+                paxText: gvt("iPaxText"),
+                currency: existing?.currency || "USD",
+                total: 0,
+                tTransport: gvt("iTransport"),
+                tLodging: gvt("iLodging"),
+                tTransfers: gvt("iTransfers"),
+                ctaLink: gvt("iLink"),
+                includes: splitLines(gv("iIncludes")),
+                excludes: splitLines(gv("iExcludes")),
+                terms: splitLines(gv("iTerms")),
+                galleryImages: currentImages.slice(0, MAX_ITINERARY_IMAGES),
+                coverImage: gv("iCoverImage"),
+                flightInfo: existing?.flightInfo || { airlineOut: "", airlineBack: "", departureCities: [] },
+                itineraryEnabled,
                 days,
-                text,
                 updatedAt: new Date().toLocaleString(state.settings.locale),
             };
 
             if (existing) Object.assign(existing, payload);
-            else state.itineraries.push(payload);
+            else pushTenantItem("itineraries", payload);
 
             saveState();
             closeModal();
             if (window.render) window.render();
+            syncItineraryInBackground(payload);
         }
     });
 
-    if (existing?.tripId) document.getElementById("iTrip").value = existing.tripId;
+    const refreshImagePreview = () => {
+        const host = document.getElementById("iImagesPreview");
+        if (!host) return;
+        host.innerHTML = renderImageThumbs();
+        host.querySelectorAll("[data-i-remove]").forEach(btn => {
+            btn.addEventListener("click", () => {
+                const idx = Number(btn.getAttribute("data-i-remove"));
+                if (Number.isNaN(idx)) return;
+                currentImages = currentImages.filter((_, i) => i !== idx);
+                refreshImagePreview();
+            });
+        });
+    };
+    refreshImagePreview();
 
-    document.getElementById("iGenerate").onclick = () => {
-        const s = state.settings;
-        const title = document.getElementById("iTitle").value.trim() || "Itinerario de Viaje";
-        const tripName = document.getElementById("iTripDisplay").value.trim() || "Viaje grupal";
-        const start = document.getElementById("iStart").value || "";
-        const end = document.getElementById("iEnd").value || "";
-        const price = parseNum(document.getElementById("iPrice").value);
-        const priceExt = parseNum(document.getElementById("iPriceExt").value);
-        const depositText = document.getElementById("iDepositText").value.trim();
-        const link = document.getElementById("iLink").value.trim();
-        const overview = document.getElementById("iOverview").value.trim();
+    const recalcDates = () => {
+        const startDate = document.getElementById("iStart")?.value || "";
+        const endDate = document.getElementById("iEnd")?.value || "";
+        const dates = toDateChip(startDate, endDate);
+        const duration = toNights(startDate, endDate);
+        const datesInput = document.getElementById("iDatesText");
+        const durationInput = document.getElementById("iDuration");
+        if (datesInput) datesInput.value = dates;
+        if (durationInput) durationInput.value = duration;
+    };
+    const recalcPax = () => {
+        const adults = parseNum(document.getElementById("iAdults")?.value || "0");
+        const children = parseNum(document.getElementById("iChildren")?.value || "0");
+        const paxInput = document.getElementById("iPaxText");
+        if (!paxInput || paxInput.value.trim()) return;
+        paxInput.value = `${adults} adultos${children ? `, ${children} niños` : ""}`;
+    };
+    const startEl = document.getElementById("iStart");
+    const endEl = document.getElementById("iEnd");
+    if (startEl) startEl.addEventListener("change", recalcDates);
+    if (endEl) endEl.addEventListener("change", recalcDates);
+    const adultsEl = document.getElementById("iAdults");
+    const childrenEl = document.getElementById("iChildren");
+    if (adultsEl) adultsEl.addEventListener("input", recalcPax);
+    if (childrenEl) childrenEl.addEventListener("input", recalcPax);
 
-        const includes = splitLines(document.getElementById("iIncludes").value);
-        const excludes = splitLines(document.getElementById("iExcludes").value);
-        const terms = splitLines(document.getElementById("iTerms").value);
-        const emirates = splitLines(document.getElementById("iEmirates").value);
-        const cities = splitLines(document.getElementById("iDepartureCities").value);
+    const itineraryToggle = document.getElementById("iEnableItinerary");
+    const itineraryWrap = document.getElementById("iItineraryWrap");
+    if (itineraryToggle && itineraryWrap) {
+        itineraryToggle.addEventListener("change", () => {
+            itineraryWrap.style.display = itineraryToggle.checked ? "" : "none";
+        });
+    }
 
-        let days = [];
-        try { days = JSON.parse(document.getElementById("iDays").value || "[]"); }
-        catch { alert("El JSON de días no es válido."); return; }
-
-        let out = "";
-        out += `${tripName}\n${title}\n\n`;
-        if (overview) out += `OVERVIEW\n${overview}\n\n`;
-        out += `TRAVEL DATES\nSalida: ${formatDateLongISO(start)}\nLlegada: ${formatDateLongISO(end)}\n\n`;
-        if (price) out += `INVESTMENT PER PERSON: ${toMoney(price, "USD")}\n`;
-        if (priceExt) out += `INVESTMENT WITH EXTENSION: ${toMoney(priceExt, "USD")}\n`;
-        if (depositText) out += `${depositText}\n`;
-        if (emirates.length) out += `EMIRATES: ${emirates.join(", ")}\n`;
-        if (cities.length) out += `DEPARTURE CITIES: ${cities.join(", ")}\n`;
-        out += "\n";
-
-        if (includes.length) {
-            out += "PACKAGE INCLUDES\n";
-            includes.forEach(x => out += `• ${x}\n`);
-            out += "\n";
+    const bindDayRow = (row) => {
+        const removeBtn = row.querySelector(".q-it-day-remove");
+        const imageInput = row.querySelector(".q-it-day-image-input");
+        const imageValue = row.querySelector(".q-it-day-image-value");
+        const previewHost = row.querySelector(".q-it-day-preview");
+        if (removeBtn) {
+            removeBtn.addEventListener("click", () => row.remove());
         }
-        if (excludes.length) {
-            out += "PACKAGE DOES NOT INCLUDE\n";
-            excludes.forEach(x => out += `• ${x}\n`);
-            out += "\n";
-        }
-        if (terms.length) {
-            out += "TÉRMINOS Y CONDICIONES\n";
-            terms.forEach(x => out += `• ${x}\n`);
-            out += "\n";
-        }
-
-        if (days.length) {
-            out += "ITINERARY BY DAY\n\n";
-            days.forEach((d, idx) => {
-                out += `${d.day || `DAY ${idx + 1}`}${d.title ? `: ${d.title}` : ""}\n`;
-                if (d.time) out += `Time: ${d.time}\n`;
-                if (d.meals) out += `Meals Included: ${d.meals}\n`;
-                if (d.content) out += `${d.content}\n`;
-                out += "\n";
+        if (imageInput && imageValue && previewHost) {
+            imageInput.addEventListener("change", async (ev) => {
+                const file = ev.target.files && ev.target.files[0];
+                if (!file) return;
+                const dataUrl = await fileToDataUrl(file, 1600, 1200);
+                imageValue.value = dataUrl;
+                previewHost.innerHTML = `<img class="q-it-day-image-preview" src="${escapeAttr(dataUrl)}" style="width:100%; max-width:180px; height:90px; object-fit:cover; border:1px solid rgba(255,255,255,.18); border-radius:8px;" />`;
             });
         }
-
-        if (link) out += `Register here\n${link}\n\n`;
-        out += `${s.companyName}\nTeléfono: ${s.phone} | Correo: ${s.email}\nInstagram: ${s.instagram} | Facebook: ${s.facebook}\nSitio web: ${s.website}\n`;
-
-        document.getElementById("iText").value = out;
     };
+    document.querySelectorAll("#iItineraryList .q-it-day-item").forEach(bindDayRow);
+    const addDayBtn = document.getElementById("iAddItineraryDay");
+    if (addDayBtn) {
+        addDayBtn.addEventListener("click", () => {
+            const list = document.getElementById("iItineraryList");
+            if (!list) return;
+            const idx = list.querySelectorAll(".q-it-day-item").length;
+            const holder = document.createElement("div");
+            holder.innerHTML = renderItineraryDayRow({}, idx);
+            const row = holder.firstElementChild;
+            if (!row) return;
+            list.appendChild(row);
+            bindDayRow(row);
+        });
+    }
 
+    const imagesInput = document.getElementById("iImagesInput");
+    if (imagesInput) {
+        imagesInput.addEventListener("change", async (ev) => {
+            const files = Array.from(ev.target.files || []);
+            if (!files.length) return;
+            const urls = await Promise.all(files.map(f => fileToDataUrl(f, 1800, 1800)));
+            currentImages = currentImages.concat(urls).slice(0, MAX_ITINERARY_IMAGES);
+            refreshImagePreview();
+        });
+    }
+    const clearImagesBtn = document.getElementById("iImagesClearAll");
+    if (clearImagesBtn) {
+        clearImagesBtn.addEventListener("click", () => {
+            currentImages = [];
+            refreshImagePreview();
+        });
+    }
     const coverInput = document.getElementById("iCoverImageFile");
     if (coverInput) {
         coverInput.addEventListener("change", async (ev) => {
             const file = ev.target.files && ev.target.files[0];
             if (!file) return;
             const dataUrl = await fileToDataUrl(file, 1800, 2400);
-            document.getElementById("iCoverImage").value = dataUrl;
+            const hidden = document.getElementById("iCoverImage");
+            if (hidden) hidden.value = dataUrl;
             const preview = document.getElementById("iCoverPreview");
-            if (preview) preview.outerHTML = `<img id="iCoverPreview" src="${escapeAttr(dataUrl)}" style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid rgba(0,0,0,.12);"/>`;
+            if (preview) preview.outerHTML = `<img id="iCoverPreview" src="${escapeAttr(dataUrl)}" style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid rgba(255,255,255,.18);" />`;
         });
     }
-
-    const galleryInput = document.getElementById("iGalleryFile");
-    if (galleryInput) {
-        galleryInput.addEventListener("change", async (ev) => {
-            const files = Array.from(ev.target.files || []);
-            if (!files.length) return;
-            const urls = await Promise.all(files.map(f => fileToDataUrl(f, 1800, 1800)));
-            const area = document.getElementById("iGallery");
-            const current = splitLines(area.value);
-            area.value = current.concat(urls).join("\n");
-        });
-    }
-
-    let dayImageUrls = [];
-    const dayImagesInput = document.getElementById("iDayImagesFile");
-    const applyDayImagesBtn = document.getElementById("iApplyDayImages");
-
-    if (dayImagesInput) {
-        dayImagesInput.addEventListener("change", async (ev) => {
-            const files = Array.from(ev.target.files || []);
-            if (!files.length) {
-                dayImageUrls = [];
-                return;
-            }
-            dayImageUrls = await Promise.all(files.map(f => fileToDataUrl(f, 1800, 1800)));
-        });
-    }
-
-    if (applyDayImagesBtn) {
-        applyDayImagesBtn.addEventListener("click", () => {
-            if (!dayImageUrls.length) {
-                alert("Primero selecciona las fotos por día.");
-                return;
-            }
-            const daysArea = document.getElementById("iDays");
-            let days = [];
-            try { days = JSON.parse(daysArea.value || "[]"); }
-            catch { alert("El JSON de días no es válido."); return; }
-
-            const updated = days.map((d, idx) => ({
-                ...d,
-                image: dayImageUrls[idx] || d.image || ""
-            }));
-            daysArea.value = JSON.stringify(updated, null, 2);
-            alert("Fotos aplicadas a los días en orden.");
+    const clearCoverBtn = document.getElementById("iCoverImageClear");
+    if (clearCoverBtn) {
+        clearCoverBtn.addEventListener("click", () => {
+            const hidden = document.getElementById("iCoverImage");
+            if (hidden) hidden.value = "";
+            const input = document.getElementById("iCoverImageFile");
+            if (input) input.value = "";
+            const preview = document.getElementById("iCoverPreview");
+            if (preview) preview.outerHTML = `<div id="iCoverPreview" class="kbd">Sin imagen seleccionada.</div>`;
         });
     }
 }
 
 export function editItinerary(id) {
-    const i = state.itineraries.find(x => x.id === id);
+    const i = findTenantItem("itineraries", x => x.id === id);
     if (i) openItineraryModal(i);
 }
 
+export function duplicateItinerary(id) {
+    const source = findTenantItem("itineraries", x => x.id === id);
+    if (!source) return;
+    closeItineraryMenus();
+    const draft = typeof structuredClone === "function"
+        ? structuredClone(source)
+        : JSON.parse(JSON.stringify(source));
+    delete draft.id;
+    delete draft.createdAt;
+    delete draft.updatedAt;
+    setTimeout(() => openItineraryModal(draft), 0);
+}
+
 export function deleteItinerary(id) {
-    state.itineraries = state.itineraries.filter(x => x.id !== id);
+    const backup = findTenantItem("itineraries", x => x.id === id);
+    removeTenantItems("itineraries", x => x.id === id);
     saveState();
     if (window.render) window.render();
+    deleteItineraryFromApi(id).catch((error) => {
+        if (backup) upsertTenantItem("itineraries", backup);
+        saveState();
+        if (window.render) window.render();
+        console.warn("[itineraries] delete warning:", error?.message || error);
+    });
 }
 
 export function viewItinerary(id) {
-    const i = state.itineraries.find(x => x.id === id);
+    const i = findTenantItem("itineraries", x => x.id === id);
     if (!i) return;
     openModal({
         title: "Ver itinerario",
@@ -619,7 +937,7 @@ async function generateItineraryPDF(id, mode = "download") {
     if (itineraryPdfBusy) return;
     itineraryPdfBusy = true;
 
-    const itinerary = state.itineraries.find(x => x.id === id);
+    const itinerary = findTenantItem("itineraries", x => x.id === id);
     const root = document.getElementById("pdf-root");
     if (!itinerary || !root) {
         itineraryPdfBusy = false;
@@ -627,178 +945,413 @@ async function generateItineraryPDF(id, mode = "download") {
     }
 
     const s = state.settings;
-    const theme = {
-        primary: itinerary.theme?.primary || "#0b3d91",
-        secondary: itinerary.theme?.secondary || "#1d63c7",
-        accent: itinerary.theme?.accent || "#f3c61b",
+    const companyRaw = (s.companyName || "Brianessa Travel | Tu agencia de viajes de confianza").trim();
+    const [companyTitlePart, companyTaglinePart] = companyRaw.split("|").map(x => (x || "").trim());
+    const companyTitle = companyTitlePart || "Brianessa Travel";
+    const companyTagline = companyTaglinePart || "Tu agencia de viajes de confianza";
+    const companyLine = `${companyTitle} | ${companyTagline}`.trim();
+    const tripName = itinerary.tripDisplay || itinerary.tripName || itinerary.title || "Itinerario de Viaje";
+    const cover = itinerary.cover || {};
+    const itineraryDays = Array.isArray(itinerary.days) ? itinerary.days : [];
+
+    const parseISODate = (iso = "") => {
+        const [y, m, d] = String(iso || "").split("-").map(Number);
+        if (!y || !m || !d) return null;
+        return { y, m, d };
+    };
+    const formatShortSpan = (startIso = "", endIso = "") => {
+        const start = parseISODate(startIso);
+        const end = parseISODate(endIso);
+        if (!start || !end) return "Por definir";
+        const mo = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+        return `${start.d} ${mo[start.m - 1]} - ${end.d} ${mo[end.m - 1]} ${end.y}`;
+    };
+    const calculateNights = (startIso = "", endIso = "") => {
+        const start = parseISODate(startIso);
+        const end = parseISODate(endIso);
+        if (!start || !end) return "";
+        const startUTC = Date.UTC(start.y, start.m - 1, start.d);
+        const endUTC = Date.UTC(end.y, end.m - 1, end.d);
+        const diff = endUTC - startUTC;
+        const nights = Math.round(diff / 86400000);
+        return nights >= 0 ? `${nights} noches` : "";
+    };
+    const datesText = formatShortSpan(itinerary.startDate, itinerary.endDate);
+    const durationText = calculateNights(itinerary.startDate, itinerary.endDate) || (itineraryDays.length ? `${itineraryDays.length} días` : "Por definir");
+    const paxText = itinerary.paxText || itinerary.passengersText || "Por definir";
+    const docDate = new Date().toLocaleDateString(s.locale || "es-DO");
+    const coverMainTitle = (cover.top || itinerary.title || "ITINERARIO").toString().trim();
+    const coverSubTitle = (cover.middle || tripName || "").toString().trim();
+    const showCoverSubtitle = !!coverSubTitle && coverSubTitle.toLowerCase() !== coverMainTitle.toLowerCase();
+
+    const richToHtml = (txt = "") => escapeHtml(String(txt || "")).replace(/\n/g, "<br/>");
+    const listFromLines = (lines = []) => lines.map(line => `<li>${richToHtml(line)}</li>`).join("");
+    const linesFromOverview = splitLines(String(itinerary.overview || ""));
+    const airlineOut = itinerary.flightInfo?.airlineOut ? `Ida: ${itinerary.flightInfo.airlineOut}` : "";
+    const airlineBack = itinerary.flightInfo?.airlineBack ? `Regreso: ${itinerary.flightInfo.airlineBack}` : "";
+    const departureCities = (itinerary.flightInfo?.departureCities || []).filter(Boolean);
+    const customTransportLines = splitLines(String(itinerary.tTransport || ""));
+    const customLodgingLines = splitLines(String(itinerary.tLodging || ""));
+    const customTransferLines = splitLines(String(itinerary.tTransfers || ""));
+    const transportLines = customTransportLines.length
+        ? customTransportLines
+        : [airlineOut, airlineBack, departureCities.length ? `Salidas: ${departureCities.join(", ")}` : ""].filter(Boolean);
+    const includeLines = (itinerary.includes || []).filter(Boolean);
+    const lodgingLines = customLodgingLines.length
+        ? customLodgingLines
+        : includeLines.filter(x => /hotel|alojamiento|hospedaje|habitaci/i.test(String(x))).slice(0, 6);
+    const transferLines = customTransferLines.length
+        ? customTransferLines
+        : includeLines.filter(x => /traslado|transfer|movilidad|transporte/i.test(String(x))).slice(0, 6);
+    const fallbackProgram = [
+        itineraryDays.length ? `${itineraryDays.length} días de itinerario` : "",
+        (itinerary.emirates || []).length ? `Destinos: ${(itinerary.emirates || []).join(", ")}` : "",
+        itinerary.depositText || ""
+    ].filter(Boolean);
+
+    const PDF_STYLES = `
+      .quotation-pdf-wrap { --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --card: #ffffff; --page: #ffffff; --bg: #f3f4f6; --brand-color: #111827; }
+      .quotation-pdf-wrap, .quotation-pdf-wrap * { box-sizing: border-box; }
+      .quotation-pdf-wrap { width: 210mm; margin: 0 auto; font-family: Arial, Helvetica, sans-serif; color: #111827; background: #fff; }
+      .qpdf-page {
+        width: 210mm;
+        height: 297mm;
+        background: #fff;
+        position: relative;
+        overflow: hidden;
+        margin: 0 auto;
+        border: 1px solid #e5e7eb;
+        break-after: page;
+        page-break-after: always;
+      }
+      .qpdf-page:last-child { break-after: auto; page-break-after: auto; }
+      .qpdf-page--first .qpdf-page__content { padding-top: 2mm; }
+      .qpdf-page__inner {
+        height: 100%;
+        padding: 4mm 12mm 9mm 12mm;
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        gap: 4px;
+      }
+      .qpdf-page__content {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .qpdf-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 0; border-bottom: none; }
+      .qpdf-brand { display: flex; gap: 12px; align-items: center; }
+      .qpdf-brand__logo { width: 72px; height: 72px; border: 1px solid #e5e7eb; background: #fff; object-fit: contain; border-radius: 10px; }
+      .qpdf-brand__text { display: flex; flex-direction: column; }
+      .qpdf-brand__title { font-size: 14px; font-weight: 800; line-height: 1.1; white-space: nowrap; }
+      .qpdf-brand__sub { display: none; }
+      .qpdf-header__date { font-size: 12px; font-weight: 700; color: #111827; }
+      .qpdf-rule { border-top: 1px solid #000; margin: 0; }
+      .qpdf-hero { margin-top: 2px; }
+      .qpdf-hero--center { display: flex; flex-direction: column; align-items: center; text-align: center; }
+      .qpdf-pill { display: inline-flex; align-items: center; font-size: 12px; padding: 8px 14px; border: 1px solid #000; color: #111827; background: #fff; border-radius: 999px; font-weight: 700; text-transform: uppercase; }
+      .qpdf-title { margin: 6px 0 8px; font-size: 42px; letter-spacing: -.4px; font-weight: 900; line-height: 1; }
+      .qpdf-title--sub { margin: 0 0 10px; font-size: 24px; letter-spacing: -.2px; font-weight: 800; line-height: 1.1; }
+      .qpdf-chips { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+      .qpdf-chips--center { justify-content: center; max-width: 175mm; margin: 0 auto; }
+      .qpdf-chip { min-width: 120px; border: 1px solid #000; border-radius: 12px; padding: 8px 10px; background: #fff; text-align: center; }
+      .qpdf-chip__label { font-size: 11px; letter-spacing: .3px; color: #4b5563; font-weight: 700; text-transform: uppercase; margin-bottom: 2px; }
+      .qpdf-chip__value { font-size: 14px; font-weight: 900; margin-top: 4px; color: #111827; }
+      .qpdf-smallnote { font-size: 12px; color: #111827; font-style: normal; margin-top: 6px; }
+      .qpdf-cards { margin-top: 10px; gap: 10px; align-items: stretch; display: grid; grid-template-columns: repeat(3, 1fr); }
+      .qpdf-card { border: 1px solid #000; border-radius: 18px; padding: 12px 12px 10px; height: 100%; background: #fff; }
+      .qpdf-card__head { gap: 10px; margin-bottom: 0; padding-bottom: 0; border-bottom: none; display: flex; align-items: center; }
+      .qpdf-icon { width: 44px; height: 44px; border: 1px solid #000; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: #fff; }
+      .qpdf-card h3 { margin: 0; font-size: 18px; line-height: 1.1; letter-spacing: -.2px; text-transform: uppercase; font-weight: 900; }
+      .qpdf-list { margin: 10px 0 0; padding: 0 0 0 16px; list-style: disc; font-size: 12.5px; font-weight: 700; line-height: 1.28; }
+      .qpdf-list li { margin: 8px 0; color: #111827; }
+      .qpdf-footer { margin-top: auto; padding-top: 10px; border-top: 1px solid #000; font-size: 10.5px; color: #111827; text-align: center; line-height: 1.24; }
+      .qpdf-footer__brand { margin-bottom: 2px; font-size: 12px; color: #000; font-weight: 700; }
+      .qpdf-footer__row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 1px; }
+      .qpdf-footer strong { color: var(--brand-color); }
+      .qpdf-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; margin-top: 20px; }
+      .qpdf-gallery__img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 12px; border: 1px solid #e5e7eb; background: #f9fafb; }
+      .qpdf-itinerary-title { margin: 8px 0 2px; font-size: 26px; font-weight: 900; color: #111827; letter-spacing: -.25px; }
+      .qpdf-itinerary-sub { margin: 0 0 6px; font-size: 12px; color: #4b5563; }
+      .qpdf-itinerary-list { display: grid; gap: 7px; }
+      .qpdf-day-block { break-inside: avoid; page-break-inside: avoid; border: 1px solid #000; border-radius: 14px; padding: 8px; background: #fff; }
+      .qpdf-day-head { font-size: 16px; color: #111827; font-weight: 900; line-height: 1.08; margin-bottom: 6px; text-transform: uppercase; letter-spacing: -.12px; }
+      .qpdf-day-row { display: grid; grid-template-columns: 66mm 1fr; gap: 8px; align-items: center; }
+      .qpdf-day-image { width: 66mm; height: 42mm; object-fit: cover; border-radius: 9px; border: 1px solid #000; background: #f9fafb; margin: 0 auto; display: block; }
+      .qpdf-day-copy { display: flex; flex-direction: column; justify-content: center; text-align: left; min-height: 42mm; }
+      .qpdf-day-text { font-size: 13px; font-weight: 500; line-height: 1.34; color: #111827; white-space: normal; text-align: left; }
+      .qpdf-day-meals { margin-top: 7px; font-size: 13px; color: #111827; text-align: left; }
+      .qpdf-day-meals__label { font-weight: 900; }
+      .qpdf-day-meals__value { font-weight: 500; }
+      .qpdf-reserve-box { margin-top: 10px; border: 1px solid #000; border-radius: 14px; padding: 12px; text-align: center; background: #fff; }
+      .qpdf-reserve-label { font-size: 12px; color: #4b5563; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+      .qpdf-reserve-link { font-size: 18px; font-weight: 900; color: #1f4a78; text-decoration: underline; }
+    `;
+
+    const renderHeader = () => `
+      <div class="qpdf-header">
+         <div class="qpdf-brand">
+           ${s.logoDataUrl ? `<img class="qpdf-brand__logo" src="${s.logoDataUrl}" />` : `<div class="qpdf-brand__logo" style="background:#222; color:#fff; display:grid; place-items:center; font-weight:900;">BT</div>`}
+           <div class="qpdf-brand__text">
+             <div class="qpdf-brand__title">${escapeHtml(companyLine)}</div>
+             <div class="qpdf-brand__sub"></div>
+           </div>
+         </div>
+         <div class="qpdf-header__date">Fecha: ${escapeHtml(docDate)}</div>
+      </div>
+    `;
+
+    const renderFooter = () => `
+      <div class="qpdf-footer">
+         <div class="qpdf-footer__brand"><strong>${escapeHtml(companyTitle)}</strong> | ${escapeHtml(companyTagline)}</div>
+         <div class="qpdf-footer__row">
+           <span>Teléfono: <strong>${escapeHtml(s.phone || "")}</strong></span>
+           <span>Correo electrónico: <strong>${escapeHtml(s.email || "")}</strong></span>
+         </div>
+         <div class="qpdf-footer__row">
+           <span>Redes sociales: <strong>Instagram: ${escapeHtml(s.instagram || "")} Facebook: ${escapeHtml(s.facebook || "")}</strong></span>
+         </div>
+         <div>Sitio web: <strong>${escapeHtml(s.website || "")}</strong></div>
+      </div>
+    `;
+
+    const renderItineraryDayBlock = (d, idx) => `
+      <div class="qpdf-day-block">
+        <div class="qpdf-day-head">${escapeHtml(d.day || `DÍA ${idx + 1}`)}${d.title ? `: ${escapeHtml(d.title)}` : ""}</div>
+        <div class="qpdf-day-row">
+          ${d.image ? `<img class="qpdf-day-image" src="${escapeAttr(d.image)}" />` : `<div class="qpdf-day-image"></div>`}
+          <div class="qpdf-day-copy">
+            <div class="qpdf-day-text">${richToHtml(d.text || d.content || "")}</div>
+            ${d.meals ? `<div class="qpdf-day-meals"><span class="qpdf-day-meals__label">Comidas Incluidas:</span> <span class="qpdf-day-meals__value">${richToHtml(d.meals)}</span></div>` : ""}
+          </div>
+        </div>
+      </div>
+    `;
+
+    const buildDynamicItineraryChunks = (days = []) => {
+        if (!days.length) return [];
+
+        const styleEl = document.createElement("style");
+        styleEl.textContent = PDF_STYLES;
+        const host = document.createElement("div");
+        host.style.position = "fixed";
+        host.style.left = "-99999px";
+        host.style.top = "0";
+        host.style.width = "210mm";
+        host.style.visibility = "hidden";
+        host.style.pointerEvents = "none";
+
+        const makeMeasurePage = () => {
+            host.innerHTML = `
+              <div class="quotation-pdf-wrap">
+                <div class="qpdf-page">
+                  <div class="qpdf-page__inner">
+                    ${renderHeader()}
+                    <div class="qpdf-rule"></div>
+                    <div class="qpdf-page__content">
+                      <h2 class="qpdf-itinerary-title">Itinerario</h2>
+                      <p class="qpdf-itinerary-sub">Plan diario de actividades con formato visual de la cotización.</p>
+                      <div class="qpdf-itinerary-list" id="qpdf-itinerary-measure-list"></div>
+                    </div>
+                    ${renderFooter()}
+                  </div>
+                </div>
+              </div>
+            `;
+            const content = host.querySelector(".qpdf-page__content");
+            const list = host.querySelector("#qpdf-itinerary-measure-list");
+            return { content, list };
+        };
+
+        document.body.appendChild(styleEl);
+        document.body.appendChild(host);
+
+        const chunks = [];
+        let currentChunk = [];
+        let page = makeMeasurePage();
+
+        const appendDayAndCheckOverflow = (day, idx) => {
+            const probe = document.createElement("div");
+            probe.innerHTML = renderItineraryDayBlock(day, idx);
+            const block = probe.firstElementChild;
+            page.list.appendChild(block);
+            return page.content.scrollHeight > (page.content.clientHeight + 1);
+        };
+
+        for (let i = 0; i < days.length; i++) {
+            const day = days[i];
+            const overflow = appendDayAndCheckOverflow(day, i);
+
+            if (!overflow) {
+                currentChunk.push(day);
+                continue;
+            }
+
+            page.list.removeChild(page.list.lastElementChild);
+            if (currentChunk.length) chunks.push(currentChunk);
+            currentChunk = [];
+            page = makeMeasurePage();
+
+            const stillOverflow = appendDayAndCheckOverflow(day, i);
+            currentChunk.push(day);
+            if (stillOverflow) {
+                chunks.push(currentChunk);
+                currentChunk = [];
+                page = makeMeasurePage();
+            }
+        }
+
+        if (currentChunk.length) chunks.push(currentChunk);
+        host.remove();
+        styleEl.remove();
+        return chunks;
     };
 
-    const cover = itinerary.cover || {};
-    const tripName = itinerary.tripDisplay || itinerary.tripName || itinerary.title || "Itinerario de Viaje";
-    const days = itinerary.days || [];
-    const pages = [];
-
-    const header = (subtitle = "ITINERARIO") => `
-      <div class="itipdf-header">
-        <div class="itipdf-brand">${escapeHtml(s.companyName || "Brianessa Travel")}</div>
-        <div class="itipdf-sub">${escapeHtml(subtitle)}</div>
+    const itineraryChunks = buildDynamicItineraryChunks(itineraryDays);
+    const renderGallery = () => {
+        if (!Array.isArray(itinerary.galleryImages) || !itinerary.galleryImages.length) return "";
+        const imgs = itinerary.galleryImages.slice(0, 6).map(src => `<img class="qpdf-gallery__img" src="${escapeAttr(src)}" />`).join("");
+        return `<div class="qpdf-gallery">${imgs}</div>`;
+    };
+    const renderReserveBox = () => itinerary.ctaLink ? `
+      <div class="qpdf-reserve-box qpdf-reserve-box--inline">
+        <div class="qpdf-reserve-label">Reservación</div>
+        <a class="qpdf-reserve-link qpdf-reserve-link-anchor" href="${escapeAttr(itinerary.ctaLink)}" target="_blank" rel="noopener">Haz clic aquí para reservar</a>
+      </div>
+    ` : "";
+    const renderItineraryPage = (daysChunk = [], isLastChunk = false) => `
+      <div class="qpdf-page">
+        <div class="qpdf-page__inner">
+          ${renderHeader()}
+          <div class="qpdf-rule"></div>
+          <div class="qpdf-page__content">
+            <h2 class="qpdf-itinerary-title">Itinerario</h2>
+            <p class="qpdf-itinerary-sub">Plan diario de actividades con formato visual de la cotización.</p>
+            <div class="qpdf-itinerary-list">
+              ${daysChunk.map((d, idx) => renderItineraryDayBlock(d, idx)).join("")}
+            </div>
+            ${isLastChunk ? renderReserveBox() : ""}
+          </div>
+          ${renderFooter()}
+        </div>
       </div>
     `;
 
-    const footer = () => `
-      <div class="itipdf-footer">
-        <div>${escapeHtml(s.companyName || "")}</div>
-        <div>Teléfono: ${escapeHtml(s.phone || "")} | Correo: ${escapeHtml(s.email || "")}</div>
-        <div>Instagram: ${escapeHtml(s.instagram || "")} | Facebook: ${escapeHtml(s.facebook || "")} | ${escapeHtml(s.website || "")}</div>
-      </div>
-    `;
+    const page1 = `
+      <div class="qpdf-page qpdf-page--first">
+        <div class="qpdf-page__inner">
+          ${renderHeader()}
+          <div class="qpdf-rule"></div>
+          <div class="qpdf-page__content">
+            <div class="qpdf-hero qpdf-hero--center">
+              <div class="qpdf-pill">Itinerario de Viaje</div>
+              <h1 class="qpdf-title">${escapeHtml(coverMainTitle)}</h1>
+              ${showCoverSubtitle ? `<div class="qpdf-title--sub">${escapeHtml(coverSubTitle)}</div>` : ``}
 
-    const listHtml = (arr = []) => arr.map(x => `<li>${escapeHtml(x)}</li>`).join("");
-    const dayBlock = (d, idx) => `
-      <article class="itipdf-day">
-        <div class="itipdf-day-head">${escapeHtml(d.day || `DÍA ${idx + 1}`)}${d.title ? `: ${escapeHtml(d.title)}` : ""}</div>
-        ${d.meals ? `<div class="itipdf-meta"><strong>Comidas incluidas:</strong> ${escapeHtml(d.meals)}</div>` : ""}
-        ${d.time ? `<div class="itipdf-meta"><strong>Horario:</strong> ${escapeHtml(d.time)}</div>` : ""}
-        <div class="itipdf-day-grid">
-          <p class="itipdf-paragraph">${escapeHtml(d.content || "")}</p>
-          ${(d.image || "") ? `<img class="itipdf-day-image" src="${escapeAttr(d.image)}" />` : ""}
-        </div>
-      </article>
-    `;
-
-    pages.push(`
-      <section class="itipdf-page">
-        <div class="itipdf-inner">
-          ${header("RESUMEN")}
-          ${itinerary.coverImage ? `<img class="itipdf-hero-img" src="${escapeAttr(itinerary.coverImage)}" />` : ""}
-          <h1 class="itipdf-title">${escapeHtml(cover.top || itinerary.title || "ITINERARIO")}</h1>
-          <h2 class="itipdf-title2">${escapeHtml(cover.middle || tripName)}</h2>
-          <div class="itipdf-mini">${escapeHtml(cover.bottom || "")}</div>
-
-          <div class="itipdf-grid-2" style="margin-top:10px;">
-            <div class="itipdf-card">
-              <h3>Servicios y Precio</h3>
-              <div><strong>Desde:</strong> ${itinerary.price ? escapeHtml(toMoney(itinerary.price, "USD")) : "Por definir"}</div>
-              ${itinerary.price ? `<div><strong>Total:</strong> ${escapeHtml(toMoney(itinerary.price, "USD"))}</div>` : ""}
-              ${itinerary.depositText ? `<div style="margin-top:8px;">${escapeHtml(itinerary.depositText)}</div>` : ""}
-            </div>
-            <div class="itipdf-card">
-              <h3>Fechas</h3>
-              <div><strong>Salida:</strong> ${escapeHtml(formatDateLongISO(itinerary.startDate) || "Por definir")}</div>
-              <div><strong>Regreso:</strong> ${escapeHtml(formatDateLongISO(itinerary.endDate) || "Por definir")}</div>
-              ${itinerary.overview ? `<div style="margin-top:8px;">${escapeHtml(itinerary.overview)}</div>` : ""}
-            </div>
-          </div>
-
-          ${days.length ? `
-            <div class="itipdf-card" style="margin-top:10px;">
-              <h3>Inicio del Itinerario</h3>
-              ${dayBlock(days[0], 0)}
-              ${days[1] ? dayBlock(days[1], 1) : ""}
-            </div>
-          ` : ""}
-          ${footer()}
-        </div>
-      </section>
-    `);
-
-    for (let i = 2; i < days.length; i += 2) {
-        const a = days[i];
-        const b = days[i + 1];
-        pages.push(`
-          <section class="itipdf-page">
-            <div class="itipdf-inner">
-              ${header("ITINERARIO")}
-              ${dayBlock(a, i)}
-              ${b ? dayBlock(b, i + 1) : ""}
-              ${footer()}
-            </div>
-          </section>
-        `);
-    }
-
-    pages.push(`
-      <section class="itipdf-page">
-        <div class="itipdf-inner">
-          ${header("INCLUYE / NO INCLUYE")}
-          <div class="itipdf-grid-2">
-            <div class="itipdf-card">
-              <h3>Incluye</h3>
-              <ul>${listHtml(itinerary.includes || [])}</ul>
-            </div>
-            <div class="itipdf-card">
-              <h3>No incluye</h3>
-              <ul>${listHtml(itinerary.excludes || [])}</ul>
-            </div>
-          </div>
-          ${(itinerary.galleryImages || []).length ? `<div class="itipdf-gallery">${(itinerary.galleryImages || []).slice(0, 4).map(src => `<img src="${escapeAttr(src)}" class="itipdf-gallery-img" />`).join("")}</div>` : ""}
-          ${itinerary.ctaLink ? `<div class="itipdf-cta">Reserva tu lugar: ${escapeHtml(itinerary.ctaLink)}</div>` : ""}
-          ${footer()}
-        </div>
-      </section>
-    `);
-
-    if ((itinerary.terms || []).length) {
-        pages.push(`
-          <section class="itipdf-page">
-            <div class="itipdf-inner">
-              ${header("TÉRMINOS Y CONDICIONES")}
-              <div class="itipdf-card">
-                <h3>Términos generales</h3>
-                <ol class="itipdf-ol">${(itinerary.terms || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ol>
+              <div class="qpdf-chips qpdf-chips--center">
+                <div class="qpdf-chip">
+                  <div class="qpdf-chip__label">Fechas</div>
+                  <div class="qpdf-chip__value">${escapeHtml(datesText)}</div>
+                </div>
+                <div class="qpdf-chip">
+                  <div class="qpdf-chip__label">Duración</div>
+                  <div class="qpdf-chip__value">${escapeHtml(durationText)}</div>
+                </div>
+                <div class="qpdf-chip">
+                  <div class="qpdf-chip__label">Pasajeros</div>
+                  <div class="qpdf-chip__value">${escapeHtml(paxText)}</div>
+                </div>
               </div>
-              ${footer()}
+              <div class="qpdf-smallnote">*Detalles de hotel y vuelos se entregan al confirmar la reserva.</div>
             </div>
-          </section>
-        `);
-    }
 
-    root.innerHTML = `<style>
-      .itipdf-wrap, .itipdf-wrap * { box-sizing: border-box; }
-      .itipdf-wrap { width: 210mm; margin: 0 auto; font-family: Arial, Helvetica, sans-serif; color: #0f172a; }
-      .itipdf-page { width: 210mm; height: 297mm; background: #fff; position: relative; overflow: hidden; break-after: page; page-break-after: always; border: 1px solid #e5e7eb; }
-      .itipdf-page:last-child { break-after: auto; page-break-after: auto; }
-      .itipdf-inner { height: 100%; padding: 11mm; display: flex; flex-direction: column; gap: 8px; }
-      .itipdf-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${theme.primary}; padding-bottom: 6px; }
-      .itipdf-brand { font-weight: 800; font-size: 12px; color: ${theme.primary}; }
-      .itipdf-sub { font-size: 11px; font-weight: 700; letter-spacing: .05em; color: #334155; text-transform: uppercase; }
-      .itipdf-hero-img { width: 100%; max-height: 68mm; object-fit: cover; border-radius: 10px; border: 1px solid #dbe3ef; }
-      .itipdf-title { margin: 0; font-size: 40px; line-height: .95; color: ${theme.primary}; font-weight: 900; text-transform: uppercase; }
-      .itipdf-title2 { margin: 0; font-size: 30px; line-height: .95; color: ${theme.secondary}; font-weight: 900; text-transform: uppercase; }
-      .itipdf-mini { font-size: 14px; font-weight: 800; color: #1e293b; text-transform: uppercase; letter-spacing: .03em; }
-      .itipdf-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      .itipdf-card { border: 1px solid #dbe3ef; border-radius: 12px; padding: 10px; background: #fff; font-size: 12px; }
-      .itipdf-card h3 { margin: 0 0 8px; font-size: 12px; color: ${theme.primary}; text-transform: uppercase; letter-spacing: .04em; }
-      .itipdf-card ul { margin: 0; padding-left: 16px; line-height: 1.45; }
-      .itipdf-day { padding: 8px 0; border-top: 1px dashed #cbd5e1; }
-      .itipdf-day:first-of-type { border-top: none; padding-top: 0; }
-      .itipdf-day-head { font-size: 15px; font-weight: 900; color: ${theme.primary}; margin-bottom: 4px; }
-      .itipdf-day-grid { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: start; }
-      .itipdf-day-image { width: 110px; height: 80px; object-fit: cover; border-radius: 8px; border: 1px solid #dbe3ef; }
-      .itipdf-meta { font-size: 11px; margin-bottom: 4px; color: #334155; }
-      .itipdf-paragraph { margin: 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap; color: #1e293b; }
-      .itipdf-gallery { margin-top: 4px; display: grid; gap: 8px; grid-template-columns: repeat(4, 1fr); }
-      .itipdf-gallery-img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 8px; border: 1px solid #dbe3ef; }
-      .itipdf-cta { margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid ${theme.accent}; background: #fffdf0; color: #92400e; font-size: 12px; font-weight: 700; }
-      .itipdf-ol { margin: 0; padding-left: 18px; line-height: 1.5; font-size: 12px; }
-      .itipdf-footer { margin-top: auto; border-top: 1px solid #cbd5e1; padding-top: 6px; font-size: 10px; color: #475569; text-align: center; line-height: 1.35; }
-    </style><div class="itipdf-wrap">${pages.join("")}</div>`;
+            ${itinerary.coverImage ? `<div style="margin-top:10px;"><img class="qpdf-gallery__img" style="aspect-ratio:16/6; border:1px solid #000;" src="${escapeAttr(itinerary.coverImage)}" /></div>` : ""}
+
+            <div class="qpdf-cards">
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">✈️</span><h3>Transporte</h3></div>
+                <ul class="qpdf-list">${listFromLines(transportLines.length ? transportLines : ["Información de vuelo por confirmar."])}</ul>
+              </div>
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">🏨</span><h3>Alojamiento</h3></div>
+                <ul class="qpdf-list">${listFromLines(lodgingLines.length ? lodgingLines : (linesFromOverview.length ? linesFromOverview : ["Alojamiento por confirmar."]))}</ul>
+              </div>
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">🚐</span><h3>Traslados</h3></div>
+                <ul class="qpdf-list">${listFromLines(transferLines.length ? transferLines : (fallbackProgram.length ? fallbackProgram : ["Traslados por confirmar."]))}</ul>
+              </div>
+            </div>
+          </div>
+          ${renderFooter()}
+        </div>
+      </div>
+    `;
+
+    const page2 = `
+      <div class="qpdf-page">
+        <div class="qpdf-page__inner">
+          ${renderHeader()}
+          <div class="qpdf-rule"></div>
+          <div class="qpdf-page__content">
+            ${renderGallery()}
+            <h3 style="margin-top:20px; text-transform:uppercase; color:#6b7280; font-size:14px;">Detalles del Paquete</h3>
+            <div class="qpdf-cards">
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">✅</span><h3>Incluye</h3></div>
+                <ul class="qpdf-list">${listFromLines((itinerary.includes || []).length ? itinerary.includes : ["Por confirmar"])}</ul>
+              </div>
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">❌</span><h3>No Incluye</h3></div>
+                <ul class="qpdf-list">${listFromLines((itinerary.excludes || []).length ? itinerary.excludes : ["Por confirmar"])}</ul>
+              </div>
+              <div class="qpdf-card">
+                <div class="qpdf-card__head"><span class="qpdf-icon">📄</span><h3>Condiciones</h3></div>
+                <ul class="qpdf-list">${listFromLines((itinerary.terms || []).length ? itinerary.terms : ["Aplican términos y condiciones del operador."])}</ul>
+              </div>
+            </div>
+            ${!itineraryChunks.length ? renderReserveBox() : ""}
+          </div>
+          ${renderFooter()}
+        </div>
+      </div>
+    `;
+
+    const itineraryPages = itineraryChunks.map((chunk, idx) => renderItineraryPage(chunk, idx === itineraryChunks.length - 1)).join("");
+    root.innerHTML = `<style>${PDF_STYLES}</style><div class="quotation-pdf-wrap">${page1}${page2}${itineraryPages}</div>`;
 
     const toFileLabel = (value, fallback) => {
         const raw = (value || fallback).toString().trim();
         return raw.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
     };
 
-    const filename = `Itinerario - ${toFileLabel(tripName, "Viaje")}.pdf`;
+    const clientLabel = toFileLabel(itinerary.clientName || itinerary.clientDisplay, "Cliente");
+    const destinationLabel = toFileLabel(itinerary.destination || itinerary.title || tripName, "Destino");
+    const filename = `Itinerario - ${clientLabel} - ${destinationLabel}.pdf`;
 
     try {
         if (!window.jspdf || !window.jspdf.jsPDF || !window.html2canvas) {
             throw new Error("Faltan librerías PDF (jsPDF/html2canvas).");
         }
 
-        const pageEls = Array.from(root.querySelectorAll(".itipdf-page"));
+        const pageEls = Array.from(root.querySelectorAll(".qpdf-page"));
+        if (!pageEls.length) throw new Error("No encontré páginas para exportar.");
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+
+        const reserveLinks = [];
+        if (itinerary.ctaLink) {
+            pageEls.forEach((pageEl, pageIdx) => {
+                const anchor = pageEl.querySelector(".qpdf-reserve-link-anchor");
+                if (!anchor) return;
+                const pageRect = pageEl.getBoundingClientRect();
+                const anchorRect = anchor.getBoundingClientRect();
+                if (!pageRect.width || !pageRect.height) return;
+                const x = ((anchorRect.left - pageRect.left) / pageRect.width) * 210;
+                const y = ((anchorRect.top - pageRect.top) / pageRect.height) * 297;
+                const w = (anchorRect.width / pageRect.width) * 210;
+                const h = (anchorRect.height / pageRect.height) * 297;
+                reserveLinks.push({ page: pageIdx + 1, x, y, w, h, url: itinerary.ctaLink });
+            });
+        }
 
         for (let i = 0; i < pageEls.length; i++) {
             const canvas = await window.html2canvas(pageEls[i], {
@@ -812,6 +1365,10 @@ async function generateItineraryPDF(id, mode = "download") {
             if (i > 0) doc.addPage("a4", "portrait");
             doc.addImage(imgData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
         }
+        reserveLinks.forEach((ln) => {
+            doc.setPage(ln.page);
+            doc.link(ln.x, ln.y, ln.w, ln.h, { url: ln.url });
+        });
 
         if (mode === "preview") {
             const blob = doc.output("blob");

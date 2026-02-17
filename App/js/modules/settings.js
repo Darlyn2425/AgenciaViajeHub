@@ -1,11 +1,40 @@
 import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, toast } from "../utils/ui.js";
 import { escapeHtml, parseNum, fileToDataUrl } from "../utils/helpers.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
 import { hasPermission, getUsers, getRoles, getCurrentUser, upsertUser, removeUser } from "../core/auth.js";
 
 window.openSettingsModal = openSettingsModal;
 window.openStatusManager = openStatusManager;
 window.openUsersManager = openUsersManager;
+
+function slugify(value = "") {
+    return String(value || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60);
+}
+
+function ensureTenantIdInternal() {
+    if (state.settings?.tenantId) return;
+    const fromCompany = slugify(state.settings?.companyName || "");
+    state.settings.tenantId = fromCompany || `tenant-${Date.now().toString(36)}`;
+}
+
+async function syncSettingsToApi() {
+    try {
+        await fetch(withTenantQuery("/api/settings"), {
+            method: "PUT",
+            headers: tenantHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ settings: state.settings }),
+        });
+    } catch {
+        // Keep local settings if remote sync fails.
+    }
+}
 
 function ensureModuleConfig() {
     if (!state.settings.modules) state.settings.modules = {};
@@ -22,6 +51,7 @@ function getModuleStatuses(moduleKey) {
 
 export function renderSettings() {
     ensureModuleConfig();
+    ensureTenantIdInternal();
     const s = state.settings;
     const users = getUsers();
     const roles = getRoles();
@@ -32,12 +62,12 @@ export function renderSettings() {
     setContent(`
     <div class="card">
       ${renderModuleToolbar("settings",
-        `<div><h2 style="margin:0;">Configuración</h2><div class="kbd">Datos de la agencia + % recargo tarjeta.</div></div>`,
+        `<div><h2 style="margin:0;">Configuración</h2><div class="kbd">Personaliza tu marca, contacto y preferencias de cobro.</div></div>`,
         `${canManageSettings ? `<button class="btn primary" onclick="window.openSettingsModal()">Editar</button>` : ``}`
     )}
       <hr/>
       <div class="grid">
-        <div class="card col-6"><strong>Empresa</strong><div class="kbd">${escapeHtml(s.companyName)}</div></div>
+        <div class="card col-6"><strong>Nombre de empresa</strong><div class="kbd">${escapeHtml(s.companyName)}</div></div>
         <div class="card col-6"><strong>Recargo tarjeta</strong><div class="kbd">${escapeHtml(String(s.cardFeePct))}%</div></div>
         <div class="card col-12"><strong>Logo</strong><div class="kbd">${s.logoDataUrl ? "Cargado ✅" : "Sin logo"}</div></div>
         <div class="card col-6">
@@ -85,14 +115,15 @@ export function openSettingsModal() {
         return;
     }
     const s = state.settings;
+    ensureTenantIdInternal();
     openModal({
-        title: "Editar configuración",
+        title: "Personalizar tu empresa",
         bodyHtml: `
-      <div class="field"><label>Company header</label><input id="sCompany" value="${escapeHtml(s.companyName)}" /></div>
+      <div class="field"><label>Nombre visible de la empresa</label><input id="sCompany" value="${escapeHtml(s.companyName)}" placeholder="Ej: Viajes Acme" /></div>
       <div class="field">
         <label>Logo (PNG/JPG)</label>
         <input id="sLogo" type="file" accept="image/*" />
-        <div class="kbd" style="margin-top:6px;">Se usará en el header del sistema y en los PDFs.</div>
+        <div class="kbd" style="margin-top:6px;">Se mostrará en el sistema y en tus documentos PDF.</div>
         <div id="sLogoPrev" style="margin-top:10px; display:flex; align-items:center; gap:10px;">
           ${s.logoDataUrl ? `<img src="${s.logoDataUrl}" alt="logo" style="width:48px;height:48px;border-radius:12px;object-fit:cover;border:1px solid rgba(0,0,0,.08);" />` : `<div class="kbd">Sin logo cargado</div>`}
           ${s.logoDataUrl ? `<button class="btn" type="button" id="sLogoRemove">Quitar</button>` : ``}
@@ -100,20 +131,23 @@ export function openSettingsModal() {
       </div>
 
       <div class="grid">
-        <div class="field col-6"><label>Tel</label><input id="sPhone" value="${escapeHtml(s.phone)}" /></div>
-        <div class="field col-6"><label>Email</label><input id="sEmail" value="${escapeHtml(s.email)}" /></div>
+        <div class="field col-6"><label>Teléfono principal</label><input id="sPhone" value="${escapeHtml(s.phone)}" /></div>
+        <div class="field col-6"><label>Email principal</label><input id="sEmail" value="${escapeHtml(s.email)}" /></div>
       </div>
       <div class="grid">
-        <div class="field col-6"><label>Instagram</label><input id="sIg" value="${escapeHtml(s.instagram)}" /></div>
-        <div class="field col-6"><label>Facebook</label><input id="sFb" value="${escapeHtml(s.facebook)}" /></div>
+        <div class="field col-6"><label>Instagram</label><input id="sIg" value="${escapeHtml(s.instagram)}" placeholder="@tuempresa" /></div>
+        <div class="field col-6"><label>Facebook</label><input id="sFb" value="${escapeHtml(s.facebook)}" placeholder="Página de Facebook" /></div>
       </div>
       <div class="grid">
-        <div class="field col-6"><label>Website</label><input id="sWeb" value="${escapeHtml(s.website)}" /></div>
-        <div class="field col-6"><label>% Recargo tarjeta</label><input id="sFee" value="${escapeHtml(String(s.cardFeePct))}" /></div>
+        <div class="field col-6"><label>Sitio web</label><input id="sWeb" value="${escapeHtml(s.website)}" placeholder="www.tuempresa.com" /></div>
+        <div class="field col-6"><label>% Recargo por tarjeta</label><input id="sFee" value="${escapeHtml(String(s.cardFeePct))}" /></div>
       </div>
     `,
         onSave: () => {
             s.companyName = document.getElementById("sCompany").value.trim() || s.companyName;
+            if (!s.tenantId || s.tenantId === "default") {
+                s.tenantId = slugify(s.companyName) || `tenant-${Date.now().toString(36)}`;
+            }
             s.phone = document.getElementById("sPhone").value.trim() || s.phone;
             s.email = document.getElementById("sEmail").value.trim() || s.email;
             s.instagram = document.getElementById("sIg").value.trim() || s.instagram;
@@ -129,6 +163,7 @@ export function openSettingsModal() {
             }
 
             saveState();
+            syncSettingsToApi();
             closeModal();
             if (window.render) window.render();
         }

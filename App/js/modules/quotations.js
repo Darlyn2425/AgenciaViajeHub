@@ -1,7 +1,9 @@
 import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, icon, toast } from "../utils/ui.js";
 import { escapeHtml, matchesSearch, uid, parseNum, toMoney, formatDateLongISO } from "../utils/helpers.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
 import { hasPermission } from "../core/auth.js";
+import { getTenantItems, findTenantItem, pushTenantItem } from "../utils/tenant-data.js";
 
 // Expose minimal window API for onclick handlers
 window.viewQuotation = editQuotation;
@@ -13,8 +15,134 @@ window.previewQuotationPDF = previewQuotationPDF;
 window.runQuotationAction = runQuotationAction;
 window.toggleQuotationMenu = toggleQuotationMenu;
 window.openQuotationModal = openQuotationModal;
+window.convertQuotationToItinerary = convertQuotationToItinerary;
 
 let quotationPdfBusy = false;
+let quotationsApiSyncStarted = false;
+let quotationsApiSyncCompleted = false;
+const API_TIMEOUT_MS = 8000;
+const QUOTATIONS_PAGE_SIZE = 20;
+let quotationsPage = 1;
+let quotationsLastSearchTerm = "";
+let quotationsTotal = 0;
+let quotationsLastFetchKey = "";
+let quotationsIsLoading = false;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchQuotationsFromApi({ page = 1, limit = QUOTATIONS_PAGE_SIZE, search = "" } = {}) {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+    search: String(search || ""),
+  });
+  const response = await fetchWithTimeout(withTenantQuery(`/api/quotations?${params.toString()}`), {
+    headers: tenantHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  const pagination = data?.pagination || {};
+  return {
+    items: data.items,
+    total: Number(pagination.total || data.items.length || 0),
+    totalPages: Number(pagination.totalPages || 1),
+  };
+}
+
+async function upsertQuotationToApi(quotation) {
+  const response = await fetchWithTimeout(withTenantQuery("/api/quotations"), {
+    method: "POST",
+    headers: tenantHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(quotation || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.item) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  return data.item;
+}
+
+async function upsertClientToApi(client) {
+  const response = await fetchWithTimeout(withTenantQuery("/api/clients"), {
+    method: "POST",
+    headers: tenantHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(client || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.item) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  return data.item;
+}
+
+function syncClientInBackground(clientObj) {
+  if (!clientObj?.id) return;
+  upsertClientToApi({
+    id: clientObj.id,
+    name: clientObj.name || "",
+    phone: clientObj.phone || "",
+    email: clientObj.email || "",
+    tripId: clientObj.tripId || "",
+    tripName: clientObj.tripName || "",
+  }).catch((error) => {
+    console.warn("[quotations] auto-client sync warning:", error?.message || error);
+  });
+}
+
+async function deleteQuotationFromApi(id) {
+  const response = await fetchWithTimeout(withTenantQuery(`/api/quotations?id=${encodeURIComponent(id)}`), {
+    method: "DELETE",
+    headers: tenantHeaders(),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || data?.deleted !== true) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+async function upsertItineraryToApi(itinerary) {
+  const response = await fetchWithTimeout(withTenantQuery("/api/itineraries"), {
+    method: "POST",
+    headers: tenantHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(itinerary || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.item) {
+    throw new Error(data?.error || `HTTP ${response.status}`);
+  }
+  return data.item;
+}
+
+async function ensureQuotationsApiSyncOnce() {
+  const fetchKey = `${quotationsPage}|${quotationsLastSearchTerm}`;
+  if (quotationsIsLoading || (quotationsApiSyncStarted && quotationsLastFetchKey === fetchKey)) return;
+  quotationsApiSyncStarted = true;
+  quotationsIsLoading = true;
+  quotationsLastFetchKey = fetchKey;
+  try {
+    const remote = await fetchQuotationsFromApi({ page: quotationsPage, limit: QUOTATIONS_PAGE_SIZE, search: quotationsLastSearchTerm });
+    state.quotations = remote.items;
+    quotationsTotal = remote.total;
+    saveState();
+    quotationsApiSyncCompleted = true;
+    rerenderQuotationsView();
+  } catch {
+    quotationsApiSyncStarted = false;
+  } finally {
+    quotationsIsLoading = false;
+  }
+}
 
 function getConfiguredQuotationStatuses() {
   const list = state.settings?.modules?.quotations?.statuses || [];
@@ -26,6 +154,32 @@ function getDefaultQuotationStatus() {
   const statuses = getConfiguredQuotationStatuses();
   return statuses.find(s => s.isDefault) || statuses[0];
 }
+
+function getActiveRoute() {
+  return document.querySelector(".nav-item.active")?.dataset?.route || "";
+}
+
+function getCurrentSearchTermFromInput() {
+  const input = document.getElementById("globalSearch") || document.getElementById("searchInput");
+  return (input?.value || "").toLowerCase();
+}
+
+function rerenderQuotationsView() {
+  if (getActiveRoute() === "quotations") {
+    renderQuotations(getCurrentSearchTermFromInput());
+    return;
+  }
+  if (window.render) window.render();
+}
+
+function goToQuotationsPage(page) {
+  const safePage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+  quotationsPage = safePage;
+  quotationsApiSyncStarted = false;
+  rerenderQuotationsView();
+}
+
+window.goToQuotationsPage = goToQuotationsPage;
 
 // Helper for image resizing (max 800x600 to save space)
 function resizeImage(file) {
@@ -83,6 +237,28 @@ function recompressDataUrl(dataUrl, { maxWidth = 640, maxHeight = 480, quality =
   });
 }
 
+async function uploadImageToBlob(file, { fallbackToBase64 = true } = {}) {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const response = await fetch("/api/uploads/image", {
+      method: "POST",
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !data?.file?.url) {
+      const reason = data?.error || `HTTP ${response.status}`;
+      throw new Error(reason);
+    }
+    return data.file.url;
+  } catch (error) {
+    if (!fallbackToBase64) {
+      throw error;
+    }
+    return resizeImage(file);
+  }
+}
+
 function toRichEditableHtml(value = "") {
   return escapeHtml(String(value || ""));
 }
@@ -114,10 +290,23 @@ async function compactAllQuotationsForStorage({ keepQuotationId = "" } = {}) {
 
 // Render logic
 export function renderQuotations(searchTerm = "") {
+  if (searchTerm !== quotationsLastSearchTerm) {
+    quotationsPage = 1;
+    quotationsLastSearchTerm = searchTerm;
+    quotationsApiSyncStarted = false;
+  }
+  if (!quotationsApiSyncCompleted || !quotationsApiSyncStarted) {
+    ensureQuotationsApiSyncOnce();
+  }
   const canManage = hasPermission("quotations.manage") || hasPermission("*");
   const statuses = getConfiguredQuotationStatuses();
   const getStatus = (q) => statuses.find(s => s.id === q.statusId) || getDefaultQuotationStatus();
-  const rows = state.quotations.filter(q => matchesSearch(q, searchTerm)).map(q => {
+  const filtered = state.quotations;
+  const totalPages = Math.max(1, Math.ceil((quotationsTotal || filtered.length) / QUOTATIONS_PAGE_SIZE));
+  if (quotationsPage > totalPages) quotationsPage = totalPages;
+  const pageStart = (quotationsPage - 1) * QUOTATIONS_PAGE_SIZE;
+  const pageItems = filtered;
+  const rows = pageItems.map(q => {
     const status = getStatus(q);
     const menuItems = `
       <button class="menu-item" onclick="window.runQuotationAction('preview','${q.id}')">
@@ -130,6 +319,11 @@ export function renderQuotations(searchTerm = "") {
         <span class="mi-tx">Descargar (PDF)</span>
       </button>
       <div class="menu-sep"></div>
+      ${canManage ? `<button class="menu-item" onclick="window.convertQuotationToItinerary('${q.id}')">
+        <span class="mi-ic">${icon('copy')}</span>
+        <span class="mi-tx">Convertir a itinerario</span>
+      </button>
+      <div class="menu-sep"></div>` : ``}
       ${canManage ? `<button class="menu-item" onclick="window.duplicateQuotation('${q.id}')">
         <span class="mi-ic">${icon('copy')}</span>
         <span class="mi-tx">Duplicar</span>
@@ -182,8 +376,16 @@ export function renderQuotations(searchTerm = "") {
       <hr/>
       <table class="table">
         <thead><tr><th>Destino</th><th>Fechas</th><th>Total</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay cotizaciones todavía.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">${quotationsIsLoading ? "Cargando cotizaciones..." : "No hay cotizaciones todavía."}</td></tr>`}</tbody>
       </table>
+      <div class="row" style="margin-top:10px;">
+        <div class="kbd">Mostrando ${quotationsTotal ? pageStart + 1 : 0}-${Math.min(pageStart + QUOTATIONS_PAGE_SIZE, quotationsTotal || filtered.length)} de ${quotationsTotal || filtered.length}</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" ${quotationsPage <= 1 ? "disabled" : ""} onclick="window.goToQuotationsPage(${quotationsPage - 1})">Anterior</button>
+          <div class="kbd">Página ${quotationsPage} / ${totalPages}</div>
+          <button class="btn" ${quotationsPage >= totalPages ? "disabled" : ""} onclick="window.goToQuotationsPage(${quotationsPage + 1})">Siguiente</button>
+        </div>
+      </div>
     </div>
   `);
 }
@@ -242,7 +444,7 @@ export function openQuotationModal(existing = null) {
   const quotationStatuses = getConfiguredQuotationStatuses();
   const defaultStatus = getDefaultQuotationStatus();
   const currentStatusId = existing?.statusId || defaultStatus.id;
-  const clientOptions = state.clients
+  const clientOptions = getTenantItems("clients")
     .map(c => `<option value="${escapeHtml(c.name)}"></option>`)
     .join("");
 
@@ -535,7 +737,7 @@ export function openQuotationModal(existing = null) {
       const clientInputRaw = gvt("qClientSearch");
       const normalizedClientInput = normalizeClientName(clientInputRaw);
       let clientObj = normalizedClientInput
-        ? state.clients.find(c => normalizeClientName(c.name) === normalizedClientInput)
+        ? findTenantItem("clients", c => normalizeClientName(c.name) === normalizedClientInput)
         : null;
 
       if (!clientObj && clientInputRaw) {
@@ -547,7 +749,8 @@ export function openQuotationModal(existing = null) {
           tripId: "",
           tripName: ""
         };
-        state.clients.push(clientObj);
+        clientObj = pushTenantItem("clients", clientObj);
+        syncClientInBackground(clientObj);
         toast("Cliente creado automáticamente en el módulo Clientes.");
       }
 
@@ -613,15 +816,15 @@ export function openQuotationModal(existing = null) {
         datesText, duration, adults, children, paxText,
         currency, priceAd, priceCh, depPct, total, deposit, pricePerPerson,
         priceNote,
-        images: currentImages, // Save the array of base64 images
+        images: currentImages,
         tTransport, tLodging, tTransfers, tInc, tNotInc, tCond,
         reserveLink,
         itineraryEnabled,
         itineraryDays,
         createdAt: isEditing ? (existing.createdAt || new Date().toISOString()) : new Date().toISOString()
       };
+      const payloadForServer = JSON.parse(JSON.stringify(payload));
 
-      if (!Array.isArray(state.clients)) state.clients = [];
       if (!Array.isArray(state.quotations)) state.quotations = [];
 
       const applyPayload = (p) => {
@@ -707,8 +910,28 @@ export function openQuotationModal(existing = null) {
         }
       }
 
+      quotationsApiSyncStarted = false;
+      quotationsLastFetchKey = "";
       closeModal();
-      if (window.render) window.render();
+      rerenderQuotationsView();
+      toast("Cotización guardada.");
+
+      // Async sync to keep UI responsive.
+      Promise.resolve().then(async () => {
+        try {
+          const remoteItem = await upsertQuotationToApi(payloadForServer);
+          if (remoteItem && remoteItem.id) {
+            if (isEditing) Object.assign(existing, remoteItem);
+            else {
+              const idx = state.quotations.findIndex(q => q.id === remoteItem.id);
+              if (idx >= 0) state.quotations[idx] = remoteItem;
+            }
+            saveState();
+          }
+        } catch {
+          toast("Guardado local OK. No se pudo sincronizar con la base de datos.");
+        }
+      });
       } catch (err) {
         console.error("Error guardando cotización:", err);
         const details = err?.message ? ` (${err.message})` : "";
@@ -781,12 +1004,13 @@ export function openQuotationModal(existing = null) {
         const files = Array.from(e.target.files).slice(0, remainingSlots);
         if (!files.length) return;
         try {
-          const promises = files.map(f => resizeImage(f));
+          const promises = files.map(f => uploadImageToBlob(f, { fallbackToBase64: true }));
           const results = await Promise.all(promises);
           currentImages = currentImages.concat(results).slice(0, MAX_QUOTATION_IMAGES);
           renderPreview();
+          toast("Imágenes cargadas.");
         } catch (err) {
-          alert("Error procesando imágenes");
+          toast("Error cargando imágenes.");
         } finally {
           e.target.value = "";
         }
@@ -826,15 +1050,16 @@ export function openQuotationModal(existing = null) {
         const row = fileInput.closest(".q-it-day-item");
         if (!row) return;
         try {
-          const imgBase64 = await resizeImage(fileInput.files[0]);
+          const imageUrl = await uploadImageToBlob(fileInput.files[0], { fallbackToBase64: true });
           const hidden = row.querySelector(".q-it-day-image-value");
-          if (hidden) hidden.value = imgBase64;
+          if (hidden) hidden.value = imageUrl;
           const wrap = row.querySelector(".q-it-day-image-preview-wrap");
           if (wrap) {
-            wrap.innerHTML = `<img class="q-it-day-image-preview" src="${imgBase64}" />`;
+            wrap.innerHTML = `<img class="q-it-day-image-preview" src="${imageUrl}" />`;
           }
+          toast("Imagen del día cargada.");
         } catch {
-          toast("No se pudo procesar la imagen del día.");
+          toast("No se pudo cargar la imagen del día.");
         } finally {
           fileInput.value = "";
         }
@@ -921,7 +1146,107 @@ export function deleteQuotation(id) {
   if (!confirm("¿Eliminar cotización?")) return;
   state.quotations = state.quotations.filter(x => x.id !== id);
   saveState();
-  if (window.render) window.render();
+  quotationsApiSyncStarted = false;
+  quotationsLastFetchKey = "";
+  rerenderQuotationsView();
+  toast("Cotización eliminada.");
+  Promise.resolve().then(async () => {
+    try {
+      await deleteQuotationFromApi(id);
+    } catch {
+      toast("Se eliminó localmente, pero falló eliminar en la base de datos.");
+    }
+  });
+}
+
+export function convertQuotationToItinerary(id) {
+  if (!(hasPermission("quotations.manage") || hasPermission("*"))) {
+    toast("No tienes permiso para convertir cotizaciones.");
+    return;
+  }
+  const q = state.quotations.find(x => x.id === id);
+  if (!q) return;
+
+  closeQuotationMenus();
+
+  const plainLines = (value = "") => String(value || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    .split("\n")
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  const itineraryDays = (q.itineraryEnabled && Array.isArray(q.itineraryDays))
+    ? q.itineraryDays.map((d, idx) => ({
+      day: d.day || `DÍA ${idx + 1}`,
+      title: d.title || "",
+      content: d.text || d.content || "",
+      text: d.text || d.content || "",
+      meals: d.meals || "",
+      image: d.image || "",
+    }))
+    : [];
+
+  const itineraryPayload = {
+    id: uid("iti"),
+    clientId: q.clientId || "",
+    clientName: q.clientName || "",
+    clientDisplay: q.clientDisplay || "",
+    statusId: q.statusId || "",
+    statusLabel: q.statusLabel || "",
+    destination: q.destination || "",
+    title: q.destination || "Itinerario de Viaje",
+    tripId: "",
+    tripName: "",
+    tripDisplay: q.destination || "",
+    docDate: q.docDate || "",
+    startDate: q.startDate || "",
+    endDate: q.endDate || "",
+    datesText: q.datesText || "",
+    duration: q.duration || "",
+    adults: Number.isFinite(Number(q.adults)) ? Number(q.adults) : 2,
+    children: Number.isFinite(Number(q.children)) ? Number(q.children) : 0,
+    paxText: q.paxText || "",
+    currency: q.currency || "USD",
+    total: Number(q.total || 0),
+    tTransport: q.tTransport || "",
+    tLodging: q.tLodging || "",
+    tTransfers: q.tTransfers || "",
+    ctaLink: q.reserveLink || "",
+    includes: plainLines(q.tInc || ""),
+    excludes: plainLines(q.tNotInc || ""),
+    terms: plainLines(q.tCond || ""),
+    galleryImages: Array.isArray(q.images) ? q.images.slice(0, 6) : [],
+    coverImage: Array.isArray(q.images) && q.images.length ? q.images[0] : "",
+    flightInfo: { airlineOut: "", airlineBack: "", departureCities: [] },
+    itineraryEnabled: itineraryDays.length > 0,
+    days: itineraryDays,
+    updatedAt: new Date().toLocaleString(state.settings.locale),
+  };
+
+  const created = pushTenantItem("itineraries", itineraryPayload);
+  saveState();
+
+  Promise.resolve().then(async () => {
+    try {
+      await upsertItineraryToApi(itineraryPayload);
+    } catch {
+      toast("Itinerario creado localmente. Falló sincronización con base de datos.");
+    }
+  });
+
+  if (typeof window.navigate === "function") {
+    window.navigate("itineraries");
+  } else if (window.render) {
+    window.render();
+  }
+
+  setTimeout(() => {
+    if (typeof window.openItineraryModal === "function") {
+      window.openItineraryModal(created || itineraryPayload);
+    }
+  }, 0);
+  toast("Cotización convertida a itinerario.");
 }
 
 

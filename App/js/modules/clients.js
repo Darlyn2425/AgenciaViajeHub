@@ -1,15 +1,108 @@
-import { state, saveState } from "../core/state.js";
+import { saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, toast } from "../utils/ui.js";
 import { escapeHtml, matchesSearch, uid } from "../utils/helpers.js";
 import { hasPermission } from "../core/auth.js";
+import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
+import {
+    getTenantItems,
+    findTenantItem,
+    upsertTenantItem,
+    pushTenantItem,
+    removeTenantItems,
+    replaceTenantItems,
+} from "../utils/tenant-data.js";
 
-// We'll need a way to trigger re-renders or access global render.
-// Ideally main.js orchestrates this, but for now we might import a "render" delegate or expose these functions.
-// We will export functions that can be called by main.js or other modules.
+const API_TIMEOUT_MS = 8000;
+let clientsApiSyncStarted = false;
+let clientsApiSyncCompleted = false;
+let clientsIsLoading = false;
+let clientsLastFetchKey = "";
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function fetchClientsFromApi({ search = "" } = {}) {
+    const params = new URLSearchParams({ page: "1", limit: "500", search: String(search || "") });
+    const response = await fetchWithTimeout(withTenantQuery(`/api/clients?${params.toString()}`), {
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !Array.isArray(data?.items)) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+    }
+    return { items: data.items };
+}
+
+async function upsertClientToApi(client) {
+    const response = await fetchWithTimeout(withTenantQuery("/api/clients"), {
+        method: "POST",
+        headers: tenantHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(client || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok || !data?.item) throw new Error(data?.error || `HTTP ${response.status}`);
+    return data.item;
+}
+
+async function deleteClientFromApi(id) {
+    const response = await fetchWithTimeout(withTenantQuery(`/api/clients?id=${encodeURIComponent(id)}`), {
+        method: "DELETE",
+        headers: tenantHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+    return true;
+}
+
+async function syncClientsFromApi(searchTerm = "") {
+    const key = String(searchTerm || "").toLowerCase().trim();
+    if (clientsIsLoading || (clientsApiSyncStarted && clientsLastFetchKey === key)) return;
+    clientsApiSyncStarted = true;
+    clientsIsLoading = true;
+    clientsLastFetchKey = key;
+    try {
+        const remote = await fetchClientsFromApi({ search: key });
+        replaceTenantItems("clients", remote.items);
+        saveState();
+        clientsApiSyncCompleted = true;
+        if (window.render) window.render();
+    } catch (error) {
+        console.warn("[clients] sync warning:", error?.message || error);
+    } finally {
+        clientsApiSyncStarted = false;
+        clientsIsLoading = false;
+    }
+}
+
+function syncClientInBackground(payload) {
+    upsertClientToApi(payload)
+        .then((remoteItem) => {
+            upsertTenantItem("clients", remoteItem);
+            saveState();
+            if (window.render) window.render();
+        })
+        .catch((error) => {
+            toast(`Cliente guardado localmente. Error al sincronizar: ${error?.message || error}`);
+        });
+}
 
 export function renderClients(searchTerm = "") {
+    if (!clientsApiSyncCompleted || !clientsApiSyncStarted) {
+        syncClientsFromApi(searchTerm);
+    }
+
     const canManage = hasPermission("clients.manage") || hasPermission("*");
-    const rows = state.clients.filter(c => matchesSearch(c, searchTerm)).map(c => `
+    const clients = getTenantItems("clients");
+    const rows = clients
+        .filter(c => matchesSearch(c, searchTerm))
+        .map(c => `
     <tr>
       <td><strong>${escapeHtml(c.name)}</strong><div class="kbd">${escapeHtml(c.tripName || "")}</div></td>
       <td>${escapeHtml(c.phone || "")}</td>
@@ -30,7 +123,7 @@ export function renderClients(searchTerm = "") {
       <hr/>
       <table class="table">
         <thead><tr><th>Cliente</th><th>Tel</th><th>Email</th><th>Acciones</th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="4" class="kbd">No hay clientes todavía.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="4" class="kbd">${clientsIsLoading ? "Cargando clientes..." : "No hay clientes todavía."}</td></tr>`}</tbody>
       </table>
     </div>
   `);
@@ -41,7 +134,7 @@ export function openClientModal(existing = null) {
         toast("No tienes permiso para modificar clientes.");
         return;
     }
-    const tripOptions = state.trips.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
+    const tripOptions = getTenantItems("trips").map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join("");
     openModal({
         title: existing ? "Editar cliente" : "Nuevo cliente",
         bodyHtml: `
@@ -75,26 +168,31 @@ export function openClientModal(existing = null) {
             const phone = document.getElementById("cPhone").value.trim();
             const email = document.getElementById("cEmail").value.trim();
             const tripId = document.getElementById("cTrip").value || "";
-            const trip = state.trips.find(t => t.id === tripId);
+            const trip = findTenantItem("trips", t => t.id === tripId);
 
-            if (existing) {
-                existing.name = name; existing.phone = phone; existing.email = email;
-                existing.tripId = tripId; existing.tripName = trip?.name || "";
-            } else {
-                state.clients.push({ id: uid("cli"), name, phone, email, tripId, tripName: trip?.name || "" });
-            }
+            const payload = {
+                id: existing?.id || uid("cli"),
+                name,
+                phone,
+                email,
+                tripId,
+                tripName: trip?.name || "",
+            };
+
+            if (existing) Object.assign(existing, payload);
+            else pushTenantItem("clients", payload);
+
             saveState();
             closeModal();
-            // We expect a global render() to be available or we need to call renderClients again.
-            // For now, let's assume window.render() or similar will be set up in main.js
             if (window.render) window.render();
+            syncClientInBackground(payload);
         }
     });
     if (existing?.tripId) document.getElementById("cTrip").value = existing.tripId;
 }
 
 export function editClient(id) {
-    const c = state.clients.find(x => x.id === id);
+    const c = findTenantItem("clients", x => x.id === id);
     if (c) openClientModal(c);
 }
 
@@ -104,12 +202,19 @@ export function deleteClient(id) {
         return;
     }
     if (!confirm("¿Eliminar cliente?")) return;
-    state.clients = state.clients.filter(x => x.id !== id);
+    const backup = findTenantItem("clients", x => x.id === id);
+    removeTenantItems("clients", x => x.id === id);
     saveState();
     if (window.render) window.render();
+
+    deleteClientFromApi(id).catch((error) => {
+        if (backup) upsertTenantItem("clients", backup);
+        saveState();
+        if (window.render) window.render();
+        toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
+    });
 }
 
-// Attach to window for onclick handlers in HTML strings
 window.openClientModal = openClientModal;
 window.editClient = editClient;
 window.deleteClient = deleteClient;

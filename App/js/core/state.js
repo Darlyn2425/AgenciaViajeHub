@@ -1,5 +1,23 @@
 const STORAGE_KEY = "bt_hub_v2";
 
+function activeTenantId(source = state) {
+    return String(source?.settings?.tenantId || "default").trim() || "default";
+}
+
+function assignTenantIfMissing(record, tenantId) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return;
+    if (!record.tenantId) record.tenantId = tenantId;
+}
+
+function migrateTenantOwnership(targetState) {
+    const tenantId = activeTenantId(targetState);
+    ["clients", "trips", "paymentPlans", "itineraries", "campaigns", "quotations"].forEach((key) => {
+        const list = targetState[key];
+        if (!Array.isArray(list)) return;
+        list.forEach((row) => assignTenantIfMissing(row, tenantId));
+    });
+}
+
 function hashPassword(raw) {
     const s = String(raw || "");
     let h = 5381;
@@ -10,6 +28,8 @@ function hashPassword(raw) {
 function defaultAuthState() {
     return {
         currentUserId: "",
+        apiToken: "",
+        apiTokenExp: 0,
         roles: [
             { id: "admin", name: "Administrador", permissions: ["*"] },
             {
@@ -102,6 +122,7 @@ function defaultModuleConfigs() {
 export function seedState() {
     return {
         settings: {
+            tenantId: "default",
             companyName: "Brianessa Travel | Tu agencia de viajes de confianza",
             phone: "+1 (954) 294-9969",
             email: "BrianessaTravel@gmail.com",
@@ -130,6 +151,65 @@ export function seedState() {
 }
 
 export let state = seedState();
+
+function isDataUrl(value) {
+    return typeof value === "string" && value.startsWith("data:");
+}
+
+function sanitizeQuotationForCache(q) {
+    if (!q || typeof q !== "object") return q;
+    return {
+        ...q,
+        images: Array.isArray(q.images)
+            ? q.images.filter((src) => typeof src === "string" && !isDataUrl(src))
+            : [],
+        itineraryDays: Array.isArray(q.itineraryDays)
+            ? q.itineraryDays.map((day) => ({
+                ...day,
+                image: isDataUrl(day?.image) ? "" : (day?.image || ""),
+            }))
+            : [],
+    };
+}
+
+function sanitizeItineraryForCache(i) {
+    if (!i || typeof i !== "object") return i;
+    return {
+        ...i,
+        coverImage: isDataUrl(i.coverImage) ? "" : (i.coverImage || ""),
+        galleryImages: Array.isArray(i.galleryImages)
+            ? i.galleryImages.filter((src) => typeof src === "string" && !isDataUrl(src))
+            : [],
+        days: Array.isArray(i.days)
+            ? i.days.map((day) => ({
+                ...day,
+                image: isDataUrl(day?.image) ? "" : (day?.image || ""),
+            }))
+            : [],
+    };
+}
+
+function sanitizePaymentPlanForCache(p) {
+    if (!p || typeof p !== "object") return p;
+    if (!p.attachmentPdf || typeof p.attachmentPdf !== "object") return p;
+    return {
+        ...p,
+        attachmentPdf: {
+            ...p.attachmentPdf,
+            // Evita guardar PDFs en base64 en localStorage.
+            dataUrl: "",
+        },
+    };
+}
+
+function buildPersistableState(source) {
+    return {
+        ...source,
+        quotations: Array.isArray(source.quotations) ? source.quotations.map(sanitizeQuotationForCache) : [],
+        itineraries: Array.isArray(source.itineraries) ? source.itineraries.map(sanitizeItineraryForCache) : [],
+        paymentPlans: Array.isArray(source.paymentPlans) ? source.paymentPlans.map(sanitizePaymentPlanForCache) : [],
+    };
+}
 
 export function loadState() {
     try {
@@ -172,6 +252,7 @@ export function loadState() {
                 users: parsed.auth?.users?.length ? parsed.auth.users : defaultAuthState().users
             }
         };
+        migrateTenantOwnership(state);
         return state;
     } catch {
         state = seedState();
@@ -180,7 +261,24 @@ export function loadState() {
 }
 
 export function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(buildPersistableState(state)));
+    } catch {
+        // Fallback extremo: preservar configuración/autenticación y listas básicas.
+        const minimal = {
+            ...seedState(),
+            settings: state.settings || seedState().settings,
+            auth: state.auth || seedState().auth,
+            clients: Array.isArray(state.clients) ? state.clients : [],
+            trips: Array.isArray(state.trips) ? state.trips : [],
+            campaigns: Array.isArray(state.campaigns) ? state.campaigns : [],
+            templates: state.templates || seedState().templates,
+            quotations: [],
+            paymentPlans: [],
+            itineraries: [],
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal));
+    }
 }
 
 export function setState(newState) {
@@ -189,9 +287,26 @@ export function setState(newState) {
 }
 
 export function refreshTripNames() {
-    const map = new Map(state.trips.map(t => [t.id, t.name]));
-    state.clients.forEach(c => c.tripName = map.get(c.tripId) || "");
-    state.paymentPlans.forEach(p => p.tripName = map.get(p.tripId) || "");
-    state.itineraries.forEach(i => i.tripName = map.get(i.tripId) || "");
+    const tenantId = activeTenantId(state);
+    const map = new Map(
+        (state.trips || [])
+            .filter((t) => {
+                assignTenantIfMissing(t, tenantId);
+                return t.tenantId === tenantId;
+            })
+            .map(t => [t.id, t.name])
+    );
+    (state.clients || []).forEach((c) => {
+        assignTenantIfMissing(c, tenantId);
+        if (c.tenantId === tenantId) c.tripName = map.get(c.tripId) || "";
+    });
+    (state.paymentPlans || []).forEach((p) => {
+        assignTenantIfMissing(p, tenantId);
+        if (p.tenantId === tenantId) p.tripName = map.get(p.tripId) || "";
+    });
+    (state.itineraries || []).forEach((i) => {
+        assignTenantIfMissing(i, tenantId);
+        if (i.tenantId === tenantId) i.tripName = map.get(i.tripId) || "";
+    });
     // Quotations no usan tripId directamente, pero si lo usaran, iría aquí
 }

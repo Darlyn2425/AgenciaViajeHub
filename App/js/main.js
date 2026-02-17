@@ -1,5 +1,6 @@
 import { state, saveState, loadState } from "./core/state.js";
 import { setRenderCallback, setContent, icon, toast, initModal, openModal, closeModal } from "./utils/ui.js";
+import { withTenantQuery, tenantHeaders } from "./utils/tenant.js";
 import {
     ensureAuthState,
     isAuthenticated,
@@ -27,6 +28,7 @@ import { renderSettings } from "./modules/settings.js";
 
 let currentRoute = "dashboard";
 let searchTerm = "";
+let tokenRefreshTimer = null;
 
 const ROUTE_TITLES = {
     dashboard: "Dashboard",
@@ -40,6 +42,107 @@ const ROUTE_TITLES = {
     ai: "Asistente IA",
     settings: "Configuración"
 };
+
+async function ensureTenantApiToken({ silent = true } = {}) {
+    const user = getCurrentUser();
+    if (!user) return "";
+    const nowSec = Math.floor(Date.now() / 1000);
+    const currentExp = Number(state.auth?.apiTokenExp || 0);
+    const currentToken = String(state.auth?.apiToken || "");
+    // Reuse token if it still has at least 3 minutes before expiration.
+    if (currentToken && currentExp > (nowSec + 180)) return currentToken;
+    const tenantId = String(state.settings?.tenantId || "default").trim() || "default";
+    if (!tenantId) return "";
+    try {
+        const response = await fetch("/api/auth/token", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-tenant-id": tenantId,
+            },
+            body: JSON.stringify({
+                tenantId,
+                username: user.username || "",
+                userId: user.id || "",
+            }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok || !data?.token) {
+            if (!silent) toast(data?.error || "No se pudo obtener token de sesión.");
+            return "";
+        }
+        const token = String(data.token || "");
+        state.auth.apiToken = token;
+        state.auth.apiTokenExp = decodeJwtExp(token);
+        saveState();
+        return token;
+    } catch {
+        if (!silent) toast("No se pudo obtener token de sesión.");
+        return "";
+    }
+}
+
+function decodeJwtExp(token) {
+    if (!token || typeof token !== "string") return 0;
+    try {
+        const parts = token.split(".");
+        if (parts.length < 2) return 0;
+        const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+        const padded = base64 + "===".slice((base64.length + 3) % 4);
+        const payload = JSON.parse(atob(padded));
+        const exp = Number(payload?.exp || 0);
+        return Number.isFinite(exp) ? exp : 0;
+    } catch {
+        return 0;
+    }
+}
+
+function stopTokenAutoRefresh() {
+    if (!tokenRefreshTimer) return;
+    clearInterval(tokenRefreshTimer);
+    tokenRefreshTimer = null;
+}
+
+function startTokenAutoRefresh() {
+    stopTokenAutoRefresh();
+    if (!isAuthenticated()) return;
+    tokenRefreshTimer = setInterval(() => {
+        if (!isAuthenticated()) {
+            stopTokenAutoRefresh();
+            return;
+        }
+        ensureTenantApiToken({ silent: true });
+    }, 60 * 1000);
+}
+
+async function syncSettingsFromApi() {
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2000);
+        const response = await fetch(withTenantQuery("/api/settings"), {
+            headers: tenantHeaders(),
+            signal: controller.signal,
+        });
+        clearTimeout(timer);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data?.ok || !data?.settings || typeof data.settings !== "object") return;
+        const before = JSON.stringify(state.settings || {});
+        state.settings = {
+            ...state.settings,
+            ...data.settings,
+        };
+        const after = JSON.stringify(state.settings || {});
+        if (before !== after) {
+            saveState();
+            // Refresh only if the user is looking at settings.
+            if (currentRoute === "settings" && typeof window.render === "function") {
+                window.render();
+            }
+        }
+    } catch {
+        // keep local settings as fallback
+    }
+}
 
 function getSearchInputEl() {
     return document.getElementById("globalSearch") || document.getElementById("searchInput");
@@ -214,7 +317,7 @@ function renderLoginScreen() {
       </div>
     `);
 
-    const submit = () => {
+    const submit = async () => {
         const user = (document.getElementById("loginUsername")?.value || "").trim();
         const pass = document.getElementById("loginPassword")?.value || "";
         const result = login(user, pass);
@@ -226,13 +329,15 @@ function renderLoginScreen() {
             }
             return;
         }
+        await ensureTenantApiToken({ silent: false });
+        startTokenAutoRefresh();
         currentRoute = getFirstAccessibleRoute();
         toast(`Bienvenido, ${result.user.name || result.user.username}`);
         render();
     };
 
     const btn = document.getElementById("btnLoginSubmit");
-    if (btn) btn.onclick = submit;
+    if (btn) btn.onclick = () => submit();
     const btnResetAccess = document.getElementById("btnResetAccess");
     if (btnResetAccess) {
         btnResetAccess.onclick = () => {
@@ -286,6 +391,7 @@ function openMyProfile() {
 }
 
 function doLogout() {
+    stopTokenAutoRefresh();
     logout();
     setAppLocked(true);
     render();
@@ -310,7 +416,6 @@ document.addEventListener("DOMContentLoaded", () => {
     // 2. Load Data State
     loadState();
     ensureAuthState();
-    saveState();
 
     // 3. Bind Sidebar
     document.querySelectorAll(".nav-item").forEach(btn => {
@@ -363,5 +468,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 8. Initial Render
     currentRoute = isAuthenticated() ? (canAccessRoute(currentRoute) ? currentRoute : getFirstAccessibleRoute()) : "dashboard";
-    render();
+    const bootstrapRender = async () => {
+        if (isAuthenticated()) {
+            await ensureTenantApiToken({ silent: true });
+            startTokenAutoRefresh();
+        }
+        render();
+    };
+    bootstrapRender();
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        if (!isAuthenticated()) return;
+        ensureTenantApiToken({ silent: true });
+    });
+
+    // 9. Deferred persistence/sync to avoid blocking first paint.
+    setTimeout(() => {
+        try { saveState(); } catch { /* ignore */ }
+        syncSettingsFromApi();
+    }, 0);
 });
