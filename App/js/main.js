@@ -30,9 +30,11 @@ let currentRoute = "dashboard";
 let searchTerm = "";
 let tokenRefreshTimer = null;
 let settingsSyncTimer = null;
+let moduleLiveRefreshTimer = null;
 let lastSettingsSyncAt = 0;
 let settingsSyncWarningShown = false;
 const SETTINGS_SYNC_INTERVAL_MS = 5000;
+const MODULE_LIVE_REFRESH_MS = 3000;
 
 const ROUTE_TITLES = {
     dashboard: "Dashboard",
@@ -125,6 +127,27 @@ function startSettingsAutoSync() {
         }
         syncSettingsFromApi();
     }, SETTINGS_SYNC_INTERVAL_MS);
+}
+
+function stopModuleLiveRefresh() {
+    if (!moduleLiveRefreshTimer) return;
+    clearInterval(moduleLiveRefreshTimer);
+    moduleLiveRefreshTimer = null;
+}
+
+function startModuleLiveRefresh() {
+    stopModuleLiveRefresh();
+    if (!isAuthenticated()) return;
+    moduleLiveRefreshTimer = setInterval(() => {
+        if (!isAuthenticated()) {
+            stopModuleLiveRefresh();
+            return;
+        }
+        const liveRoutes = new Set(["clients", "trips", "payment-plans", "itineraries", "quotations"]);
+        if (!liveRoutes.has(currentRoute)) return;
+        if (!document.getElementById("modalOverlay")?.classList.contains("hidden")) return;
+        render();
+    }, MODULE_LIVE_REFRESH_MS);
 }
 
 function getSearchInputEl() {
@@ -306,6 +329,7 @@ function renderLoginScreen() {
         await ensureTenantApiToken({ silent: false });
         startTokenAutoRefresh();
         startSettingsAutoSync();
+        startModuleLiveRefresh();
         await syncSettingsFromApi();
         currentRoute = getFirstAccessibleRoute();
         toast(`Bienvenido, ${result.user.name || result.user.username}`);
@@ -401,6 +425,7 @@ function openMyProfile() {
 function doLogout() {
     stopTokenAutoRefresh();
     stopSettingsAutoSync();
+    stopModuleLiveRefresh();
     logout();
     setAppLocked(true);
     render();
@@ -482,6 +507,7 @@ document.addEventListener("DOMContentLoaded", () => {
             await ensureTenantApiToken({ silent: true });
             startTokenAutoRefresh();
             startSettingsAutoSync();
+            startModuleLiveRefresh();
             await syncSettingsFromApi();
         }
         render();

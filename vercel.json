@@ -28,6 +28,24 @@
             ]
         },
         {
+            "source": "/",
+            "headers": [
+                { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" }
+            ]
+        },
+        {
+            "source": "/js/(.*)",
+            "headers": [
+                { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" }
+            ]
+        },
+        {
+            "source": "/styles.css",
+            "headers": [
+                { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" }
+            ]
+        },
+        {
             "source": "/(.*)",
             "headers": [
                 { "key": "X-Content-Type-Options", "value": "nosniff" },
