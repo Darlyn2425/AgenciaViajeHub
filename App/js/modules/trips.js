@@ -18,6 +18,7 @@ let tripsApiSyncCompleted = false;
 let tripsIsLoading = false;
 let tripsLastFetchKey = "";
 let tripsLastSyncedAt = 0;
+let tripsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -75,9 +76,13 @@ async function syncTripsFromApi(searchTerm = "") {
     saveState();
     tripsApiSyncCompleted = true;
     tripsLastSyncedAt = Date.now();
+    tripsSyncErrorNotified = false;
     if (window.render) window.render();
   } catch (error) {
-    console.warn("[trips] sync warning:", error?.message || error);
+    if (!tripsSyncErrorNotified) {
+      toast(`No se pudo sincronizar viajes: ${error?.message || error}`);
+      tripsSyncErrorNotified = true;
+    }
   } finally {
     tripsApiSyncStarted = false;
     tripsIsLoading = false;

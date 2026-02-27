@@ -19,6 +19,7 @@ let clientsApiSyncCompleted = false;
 let clientsIsLoading = false;
 let clientsLastFetchKey = "";
 let clientsLastSyncedAt = 0;
+let clientsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -75,9 +76,13 @@ async function syncClientsFromApi(searchTerm = "") {
         saveState();
         clientsApiSyncCompleted = true;
         clientsLastSyncedAt = Date.now();
+        clientsSyncErrorNotified = false;
         if (window.render) window.render();
     } catch (error) {
-        console.warn("[clients] sync warning:", error?.message || error);
+        if (!clientsSyncErrorNotified) {
+            toast(`No se pudo sincronizar clientes: ${error?.message || error}`);
+            clientsSyncErrorNotified = true;
+        }
     } finally {
         clientsApiSyncStarted = false;
         clientsIsLoading = false;

@@ -177,6 +177,7 @@ export function openSettingsModal() {
                     ...(synced?.settings || {}),
                 };
                 saveState();
+                toast("Configuración guardada en servidor.");
             } catch (error) {
                 state.settings = prev;
                 saveState();

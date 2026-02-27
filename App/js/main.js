@@ -32,7 +32,7 @@ let tokenRefreshTimer = null;
 let settingsSyncTimer = null;
 let lastSettingsSyncAt = 0;
 let settingsSyncWarningShown = false;
-const SETTINGS_SYNC_INTERVAL_MS = 20000;
+const SETTINGS_SYNC_INTERVAL_MS = 5000;
 
 const ROUTE_TITLES = {
     dashboard: "Dashboard",
@@ -158,7 +158,10 @@ function render() {
         case "campaigns": renderCampaigns(); break;
         case "templates": renderTemplates(); break;
         case "ai": renderAI(); break;
-        case "settings": renderSettings(); break;
+        case "settings":
+            syncSettingsFromApi();
+            renderSettings();
+            break;
         default: renderDashboard();
     }
 

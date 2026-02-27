@@ -29,6 +29,7 @@ let quotationsTotal = 0;
 let quotationsLastFetchKey = "";
 let quotationsIsLoading = false;
 let quotationsLastSyncedAt = 0;
+let quotationsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -139,9 +140,14 @@ async function ensureQuotationsApiSyncOnce() {
     saveState();
     quotationsApiSyncCompleted = true;
     quotationsLastSyncedAt = Date.now();
+    quotationsSyncErrorNotified = false;
     rerenderQuotationsView();
-  } catch {
+  } catch (error) {
     quotationsApiSyncStarted = false;
+    if (!quotationsSyncErrorNotified) {
+      toast(`No se pudo sincronizar cotizaciones: ${error?.message || error}`);
+      quotationsSyncErrorNotified = true;
+    }
   } finally {
     quotationsIsLoading = false;
   }

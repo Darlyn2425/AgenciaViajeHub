@@ -1,5 +1,5 @@
 import { state, saveState } from "../core/state.js";
-import { setContent, renderModuleToolbar, openModal, closeModal, icon } from "../utils/ui.js";
+import { setContent, renderModuleToolbar, openModal, closeModal, icon, toast } from "../utils/ui.js";
 import { escapeHtml, escapeAttr, matchesSearch, uid, parseNum, toMoney, formatDateLongISO, fileToDataUrl } from "../utils/helpers.js";
 import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
 import { getTenantItems, findTenantItem, pushTenantItem, removeTenantItems, upsertTenantItem, replaceTenantItems } from "../utils/tenant-data.js";
@@ -24,6 +24,7 @@ let itinerariesApiSyncCompleted = false;
 let itinerariesIsLoading = false;
 let itinerariesLastFetchKey = "";
 let itinerariesLastSyncedAt = 0;
+let itinerariesSyncErrorNotified = false;
 
 function getConfiguredItineraryStatuses() {
     const itineraryList = state.settings?.modules?.itineraries?.statuses || [];
@@ -93,9 +94,13 @@ async function syncItinerariesFromApi(searchTerm = "") {
         saveState();
         itinerariesApiSyncCompleted = true;
         itinerariesLastSyncedAt = Date.now();
+        itinerariesSyncErrorNotified = false;
         if (window.render) window.render();
     } catch (error) {
-        console.warn("[itineraries] sync warning:", error?.message || error);
+        if (!itinerariesSyncErrorNotified) {
+            toast(`No se pudo sincronizar itinerarios: ${error?.message || error}`);
+            itinerariesSyncErrorNotified = true;
+        }
     } finally {
         itinerariesApiSyncStarted = false;
         itinerariesIsLoading = false;
@@ -110,7 +115,7 @@ function syncItineraryInBackground(payload) {
             if (window.render) window.render();
         })
         .catch((error) => {
-            console.warn("[itineraries] upsert warning:", error?.message || error);
+            toast(`No se pudo sincronizar itinerario: ${error?.message || error}`);
         });
 }
 
@@ -895,7 +900,7 @@ export function deleteItinerary(id) {
         if (backup) upsertTenantItem("itineraries", backup);
         saveState();
         if (window.render) window.render();
-        console.warn("[itineraries] delete warning:", error?.message || error);
+        toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
     });
 }
 

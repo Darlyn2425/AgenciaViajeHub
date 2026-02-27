@@ -31,6 +31,7 @@ let paymentPlansLastSearchTerm = "";
 let paymentPlansTotal = 0;
 let paymentPlansLastFetchKey = "";
 let paymentPlansLastSyncedAt = 0;
+let paymentPlansSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -196,9 +197,14 @@ async function ensurePaymentPlansApiSyncOnce() {
         saveState();
         paymentPlansApiSyncCompleted = true;
         paymentPlansLastSyncedAt = Date.now();
+        paymentPlansSyncErrorNotified = false;
         rerenderPaymentPlansView();
-    } catch {
+    } catch (error) {
         paymentPlansApiSyncStarted = false;
+        if (!paymentPlansSyncErrorNotified) {
+            toast(`No se pudo sincronizar planes de pago: ${error?.message || error}`);
+            paymentPlansSyncErrorNotified = true;
+        }
     } finally {
         paymentPlansIsLoading = false;
     }
