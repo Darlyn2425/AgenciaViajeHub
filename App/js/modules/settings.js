@@ -2,7 +2,7 @@ import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, toast } from "../utils/ui.js";
 import { escapeHtml, parseNum, fileToDataUrl } from "../utils/helpers.js";
 import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
-import { hasPermission, getUsers, getRoles, getCurrentUser, upsertUser, removeUser } from "../core/auth.js";
+import { hasPermission, getUsers, getRoles, getCurrentUser, upsertUser, removeUser, loadUsersAndRoles } from "../core/auth.js";
 
 window.openSettingsModal = openSettingsModal;
 window.openStatusManager = openStatusManager;
@@ -50,6 +50,9 @@ function getModuleStatuses(moduleKey) {
 }
 
 export function renderSettings() {
+    if ((hasPermission("users.manage") || hasPermission("*")) && !state.auth?.users?.length) {
+        loadUsersAndRoles().then(() => { if (window.render) window.render(); });
+    }
     ensureModuleConfig();
     ensureTenantIdInternal();
     const s = state.settings;
@@ -350,9 +353,15 @@ export function openStatusManager(moduleKey) {
     rerender();
 }
 
-export function openUsersManager() {
+export async function openUsersManager() {
     if (!(hasPermission("users.manage") || hasPermission("*"))) {
         toast("No tienes permiso para administrar usuarios.");
+        return;
+    }
+
+    const loaded = await loadUsersAndRoles();
+    if (!loaded.ok) {
+        toast(loaded.message || "No se pudieron cargar usuarios.");
         return;
     }
 
@@ -459,17 +468,25 @@ export function openUsersManager() {
             <div id="usersRows"></div>
           </div>
         `,
-        onSave: () => {
+        onSave: async () => {
             const currentIds = new Set(getUsers().map(u => u.id));
             const nextIds = new Set(rows.filter(r => r.id).map(r => r.id));
 
             // Remove deleted users (except current session; protected in removeUser)
             currentIds.forEach(id => {
-                if (!nextIds.has(id)) removeUser(id);
+                if (!nextIds.has(id)) rows.push({ _deleteId: id });
             });
 
             for (const row of rows) {
-                const res = upsertUser({
+                if (row._deleteId) {
+                    const removed = await removeUser(row._deleteId);
+                    if (!removed.ok) {
+                        toast(removed.message || "Error eliminando usuarios.");
+                        return;
+                    }
+                    continue;
+                }
+                const awaited = await upsertUser({
                     id: row.id,
                     name: row.name,
                     username: row.username,
@@ -479,8 +496,8 @@ export function openUsersManager() {
                     email: row.email,
                     phone: row.phone
                 });
-                if (!res.ok) {
-                    toast(res.message || "Error guardando usuarios.");
+                if (!awaited.ok) {
+                    toast(awaited.message || "Error guardando usuarios.");
                     return;
                 }
             }
@@ -502,7 +519,7 @@ export function openUsersManager() {
                 active: true,
                 email: "",
                 phone: "",
-                _tempPassword: "123456"
+                _tempPassword: ""
             });
             rerender();
         };

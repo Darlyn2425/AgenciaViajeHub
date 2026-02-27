@@ -10,15 +10,15 @@ module.exports = async function handler(req, res) {
   try {
     tenantId = getTenantIdFromRequest(req);
   } catch (error) {
-    return json(res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
+    return json(req, res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
   }
 
   if (req.method === "GET") {
     try {
       const found = await getSettingsByTenant(tenantId);
-      return json(res, 200, { ok: true, tenantId, settings: found?.settings || {}, updatedAt: found?.updatedAt || "" });
+      return json(req, res, 200, { ok: true, tenantId, settings: found?.settings || {}, updatedAt: found?.updatedAt || "" });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to get settings",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -31,12 +31,12 @@ module.exports = async function handler(req, res) {
       const body = await readJsonBody(req);
       const settings = body?.settings;
       if (!settings || typeof settings !== "object") {
-        return json(res, 400, { ok: false, error: "Missing settings object" });
+        return json(req, res, 400, { ok: false, error: "Missing settings object" });
       }
       const saved = await upsertSettingsByTenant(tenantId, settings);
-      return json(res, 200, { ok: true, tenantId: saved.tenantId, settings: saved.settings, updatedAt: saved.updatedAt });
+      return json(req, res, 200, { ok: true, tenantId: saved.tenantId, settings: saved.settings, updatedAt: saved.updatedAt });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to save settings",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -44,5 +44,5 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  return methodNotAllowed(res, ["GET", "PUT"]);
+  return methodNotAllowed(req, res, ["GET", "PUT"]);
 };

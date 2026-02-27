@@ -1,5 +1,6 @@
 const { json, methodNotAllowed } = require("../../lib/http");
 const { readJsonBody } = require("../../lib/request");
+const { readPagination } = require("../../lib/security");
 const { listClients, upsertClient, deleteClientById } = require("../../lib/clients-store");
 const { getTenantIdFromRequest } = require("../../lib/tenant");
 
@@ -11,32 +12,21 @@ function getId(req) {
   return String(id || "").trim();
 }
 
-function getPagination(req) {
-  const pageRaw = Array.isArray(req.query?.page) ? req.query.page[0] : req.query?.page;
-  const limitRaw = Array.isArray(req.query?.limit) ? req.query.limit[0] : req.query?.limit;
-  const searchRaw = Array.isArray(req.query?.search) ? req.query.search[0] : req.query?.search;
-  return {
-    page: Number(pageRaw) || 1,
-    limit: Number(limitRaw) || 100,
-    search: String(searchRaw || ""),
-  };
-}
-
 module.exports = async function handler(req, res) {
   let tenantId = "";
   try {
     tenantId = getTenantIdFromRequest(req);
   } catch (error) {
-    return json(res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
+    return json(req, res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
   }
 
   if (req.method === "GET") {
     try {
-      const { page, limit, search } = getPagination(req);
+      const { page, limit, search } = readPagination(req, { page: 1, limit: 100, maxLimit: 100 });
       const result = await listClients({ tenantId, page, limit, search });
-      return json(res, 200, { ok: true, tenantId, items: result.items, pagination: result.pagination });
+      return json(req, res, 200, { ok: true, tenantId, items: result.items, pagination: result.pagination });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to list clients",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -48,10 +38,10 @@ module.exports = async function handler(req, res) {
     try {
       const payload = await readJsonBody(req);
       const item = await upsertClient(tenantId, payload);
-      return json(res, 201, { ok: true, item });
+      return json(req, res, 201, { ok: true, item });
     } catch (error) {
       const status = String(error?.message || "").includes("required") ? 400 : 500;
-      return json(res, status, {
+      return json(req, res, status, {
         ok: false,
         error: "Failed to save client",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -62,12 +52,12 @@ module.exports = async function handler(req, res) {
   if (req.method === "DELETE") {
     try {
       const id = getId(req);
-      if (!id) return json(res, 400, { ok: false, error: "Missing client id" });
+      if (!id) return json(req, res, 400, { ok: false, error: "Missing client id" });
       const deleted = await deleteClientById(tenantId, id);
-      if (!deleted) return json(res, 404, { ok: false, error: "Client not found", deleted: false });
-      return json(res, 200, { ok: true, deleted: true });
+      if (!deleted) return json(req, res, 404, { ok: false, error: "Client not found", deleted: false });
+      return json(req, res, 200, { ok: true, deleted: true });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to delete client",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -75,5 +65,5 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  return methodNotAllowed(res, ["GET", "POST", "DELETE"]);
+  return methodNotAllowed(req, res, ["GET", "POST", "DELETE"]);
 };

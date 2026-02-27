@@ -5,13 +5,13 @@ import {
     ensureAuthState,
     isAuthenticated,
     login,
+    refreshAuthSession,
     logout,
     getCurrentUser,
     hasPermission,
     canAccessRoute,
     getFirstAccessibleRoute,
-    updateMyProfile,
-    resetAccessToDefault
+    updateMyProfile
 } from "./core/auth.js";
 
 // Import modules
@@ -44,57 +44,11 @@ const ROUTE_TITLES = {
 };
 
 async function ensureTenantApiToken({ silent = true } = {}) {
-    const user = getCurrentUser();
-    if (!user) return "";
-    const nowSec = Math.floor(Date.now() / 1000);
-    const currentExp = Number(state.auth?.apiTokenExp || 0);
-    const currentToken = String(state.auth?.apiToken || "");
-    // Reuse token if it still has at least 3 minutes before expiration.
-    if (currentToken && currentExp > (nowSec + 180)) return currentToken;
-    const tenantId = String(state.settings?.tenantId || "default").trim() || "default";
-    if (!tenantId) return "";
-    try {
-        const response = await fetch("/api/auth/token", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "x-tenant-id": tenantId,
-            },
-            body: JSON.stringify({
-                tenantId,
-                username: user.username || "",
-                userId: user.id || "",
-            }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data?.ok || !data?.token) {
-            if (!silent) toast(data?.error || "No se pudo obtener token de sesión.");
-            return "";
-        }
-        const token = String(data.token || "");
-        state.auth.apiToken = token;
-        state.auth.apiTokenExp = decodeJwtExp(token);
-        saveState();
-        return token;
-    } catch {
-        if (!silent) toast("No se pudo obtener token de sesión.");
-        return "";
+    const refreshed = await refreshAuthSession();
+    if (!refreshed.ok && !silent) {
+        toast(refreshed.message || "Tu sesión expiró. Inicia sesión de nuevo.");
     }
-}
-
-function decodeJwtExp(token) {
-    if (!token || typeof token !== "string") return 0;
-    try {
-        const parts = token.split(".");
-        if (parts.length < 2) return 0;
-        const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-        const padded = base64 + "===".slice((base64.length + 3) % 4);
-        const payload = JSON.parse(atob(padded));
-        const exp = Number(payload?.exp || 0);
-        return Number.isFinite(exp) ? exp : 0;
-    } catch {
-        return 0;
-    }
+    return refreshed.ok ? String(state.auth?.apiToken || "") : "";
 }
 
 function stopTokenAutoRefresh() {
@@ -309,18 +263,53 @@ function renderLoginScreen() {
               <input id="loginPassword" type="password" placeholder="••••••" />
             </div>
             <button class="btn primary" id="btnLoginSubmit">Entrar</button>
-            <div class="kbd">Usuario inicial: <strong>admin</strong> | Clave inicial: <strong>admin123</strong></div>
-            <button class="btn ghost" id="btnResetAccess" type="button">Recuperar acceso inicial</button>
+            <div class="kbd">Si es tu primer acceso, cambia la contraseña de administrador inmediatamente.</div>
             <div id="loginError" class="auth-error" style="display:none;"></div>
           </div>
         </div>
       </div>
     `);
 
+    const continueAfterLogin = async (result) => {
+        await ensureTenantApiToken({ silent: false });
+        startTokenAutoRefresh();
+        currentRoute = getFirstAccessibleRoute();
+        toast(`Bienvenido, ${result.user.name || result.user.username}`);
+        render();
+    };
+
+    const forcePasswordChange = (result) => {
+        openModal({
+            title: "Seguridad: cambia tu contraseña",
+            bodyHtml: `
+                <div class="form-layout">
+                    <div class="field"><label>Nueva contraseña</label><input id="forcedPass1" type="password" placeholder="Mínimo 10 caracteres" /></div>
+                    <div class="field"><label>Confirmar contraseña</label><input id="forcedPass2" type="password" placeholder="Repite la contraseña" /></div>
+                    <div class="kbd">Usa una contraseña con letras y números.</div>
+                </div>
+            `,
+            onSave: async () => {
+                const p1 = document.getElementById("forcedPass1")?.value || "";
+                const p2 = document.getElementById("forcedPass2")?.value || "";
+                if (!p1 || p1 !== p2) {
+                    toast("Las contraseñas no coinciden.");
+                    return;
+                }
+                const changed = await updateMyProfile({ newPassword: p1 });
+                if (!changed.ok) {
+                    toast(changed.message || "No se pudo actualizar la contraseña.");
+                    return;
+                }
+                closeModal();
+                await continueAfterLogin(result);
+            }
+        });
+    };
+
     const submit = async () => {
         const user = (document.getElementById("loginUsername")?.value || "").trim();
         const pass = document.getElementById("loginPassword")?.value || "";
-        const result = login(user, pass);
+        const result = await login(user, pass);
         if (!result.ok) {
             const err = document.getElementById("loginError");
             if (err) {
@@ -329,33 +318,18 @@ function renderLoginScreen() {
             }
             return;
         }
-        await ensureTenantApiToken({ silent: false });
-        startTokenAutoRefresh();
-        currentRoute = getFirstAccessibleRoute();
-        toast(`Bienvenido, ${result.user.name || result.user.username}`);
-        render();
+
+        if (result.mustChangePassword) {
+            toast("Debes cambiar la contraseña por seguridad antes de continuar.");
+            forcePasswordChange(result);
+            return;
+        }
+
+        await continueAfterLogin(result);
     };
 
     const btn = document.getElementById("btnLoginSubmit");
     if (btn) btn.onclick = () => submit();
-    const btnResetAccess = document.getElementById("btnResetAccess");
-    if (btnResetAccess) {
-        btnResetAccess.onclick = () => {
-            const ok = window.confirm("Esto restablecerá usuarios y roles al acceso inicial (admin/admin123). ¿Continuar?");
-            if (!ok) return;
-            resetAccessToDefault();
-            const err = document.getElementById("loginError");
-            if (err) {
-                err.style.display = "block";
-                err.style.color = "var(--ok)";
-                err.textContent = "Acceso restablecido. Ingresa con admin / admin123.";
-            }
-            const userEl = document.getElementById("loginUsername");
-            const passEl = document.getElementById("loginPassword");
-            if (userEl) userEl.value = "admin";
-            if (passEl) passEl.value = "admin123";
-        };
-    }
     const passwordEl = document.getElementById("loginPassword");
     if (passwordEl) passwordEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter") submit();
@@ -376,12 +350,12 @@ function openMyProfile() {
             <div class="field"><label>Nueva contraseña (opcional)</label><input id="myPass" type="password" placeholder="Dejar vacío para no cambiar" /></div>
           </div>
         `,
-        onSave: () => {
+        onSave: async () => {
             const name = document.getElementById("myName").value.trim();
             const email = document.getElementById("myEmail").value.trim();
             const phone = document.getElementById("myPhone").value.trim();
             const newPassword = document.getElementById("myPass").value;
-            const res = updateMyProfile({ name, email, phone, newPassword });
+            const res = await updateMyProfile({ name, email, phone, newPassword });
             if (!res.ok) { toast(res.message || "No se pudo actualizar perfil."); return; }
             closeModal();
             toast("Perfil actualizado.");

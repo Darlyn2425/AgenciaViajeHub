@@ -59,6 +59,10 @@ Se agregó base de backend dentro del mismo proyecto para usar con `vercel dev` 
 - `REQUIRE_AUTH_TENANT`: activa validación JWT obligatoria en APIs tenant (`true` recomendado/por defecto).
 - `AUTH_TOKEN_TTL`: tiempo de vida del token emitido por `/api/auth/token` (opcional, default: `8h`).
 - `AUTH_TOKEN_ISSUER`: issuer de JWT (opcional, default: `brianessa-travel-hub`).
+- `AUTH_TOKEN_AUDIENCE`: audience esperado para JWT (opcional, recomendado en producción).
+- `ALLOWED_ORIGINS`: lista separada por comas de orígenes permitidos para requests de navegador (recomendado en producción).
+- `MAX_JSON_BODY_BYTES`: tamaño máximo de JSON por request (opcional, default: `262144`).
+- `MONGODB_COLLECTION_AUTH`: colección de usuarios/roles para autenticación backend (opcional, default: `auth_users`).
 
 ### Endpoint de subida de imágenes
 
@@ -119,6 +123,16 @@ Respuesta exitosa:
 - `GET /api/settings?tenantId=default`
 - `PUT /api/settings?tenantId=default`
 
+### Endpoints de autenticación (backend)
+
+- `POST /api/auth/login` (usuario/contraseña, devuelve token + sesión).
+- `GET /api/auth/session` (valida/renueva token y devuelve sesión).
+- `PUT /api/auth/profile` (actualiza perfil del usuario autenticado).
+- `GET /api/auth/users` (listar usuarios/roles, requiere `users.manage`).
+- `POST /api/auth/users` (crear/actualizar usuario, requiere `users.manage`).
+- `DELETE /api/auth/users?id=...` (eliminar usuario, requiere `users.manage`).
+- `POST /api/auth/reset` (restablece accesos al estado inicial, requiere `users.manage`).
+
 ### Multi-tenant (fase inicial)
 
 - El frontend envía `tenantId` por query y header `x-tenant-id`.
@@ -130,3 +144,11 @@ Respuesta exitosa:
   - `MONGODB_COLLECTION_CLIENTS`
   - `MONGODB_COLLECTION_TRIPS`
   - `MONGODB_COLLECTION_ITINERARIES`
+
+### Recomendaciones de seguridad para producción
+
+- Define `REQUIRE_AUTH_TENANT=true` (valor recomendado).
+- Configura `JWT_SECRET` con un valor largo y aleatorio (mínimo 32 caracteres).
+- Configura `ALLOWED_ORIGINS` con tu dominio final de Vercel (ej: `https://tuapp.vercel.app` o dominio custom).
+- No compartas ni expongas `BLOB_READ_WRITE_TOKEN` ni `MONGODB_URI`.
+- En el primer login de la app, cambia inmediatamente la contraseña de `admin`.

@@ -1,5 +1,8 @@
-module.exports = async function handler(_req, res) {
-  res.statusCode = 200;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ ok: true, service: "api", time: new Date().toISOString() }));
+const { json, methodNotAllowed } = require("../lib/http");
+
+module.exports = async function handler(req, res) {
+  if (req.method !== "GET") {
+    return methodNotAllowed(req, res, ["GET"]);
+  }
+  return json(req, res, 200, { ok: true, service: "api", time: new Date().toISOString() });
 };

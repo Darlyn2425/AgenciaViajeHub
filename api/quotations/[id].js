@@ -15,20 +15,20 @@ module.exports = async function handler(req, res) {
   try {
     tenantId = getTenantIdFromRequest(req);
   } catch (error) {
-    return json(res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
+    return json(req, res, error?.statusCode || 401, { ok: false, error: error?.message || "Unauthorized" });
   }
   const id = getId(req);
   if (!id) {
-    return json(res, 400, { ok: false, error: "Missing quotation id" });
+    return json(req, res, 400, { ok: false, error: "Missing quotation id" });
   }
 
   if (req.method === "GET") {
     try {
       const item = await getQuotationById(tenantId, id);
-      if (!item) return json(res, 404, { ok: false, error: "Quotation not found" });
-      return json(res, 200, { ok: true, item });
+      if (!item) return json(req, res, 404, { ok: false, error: "Quotation not found" });
+      return json(req, res, 200, { ok: true, item });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to get quotation",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -40,9 +40,9 @@ module.exports = async function handler(req, res) {
     try {
       const payload = await readJsonBody(req);
       const item = await upsertQuotation(tenantId, { ...payload, id });
-      return json(res, 200, { ok: true, item });
+      return json(req, res, 200, { ok: true, item });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to update quotation",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -54,11 +54,11 @@ module.exports = async function handler(req, res) {
     try {
       const deleted = await deleteQuotationById(tenantId, id);
       if (!deleted) {
-        return json(res, 404, { ok: false, error: "Quotation not found", deleted: false });
+        return json(req, res, 404, { ok: false, error: "Quotation not found", deleted: false });
       }
-      return json(res, 200, { ok: true, deleted });
+      return json(req, res, 200, { ok: true, deleted });
     } catch (error) {
-      return json(res, 500, {
+      return json(req, res, 500, {
         ok: false,
         error: "Failed to delete quotation",
         details: EXPOSE_DETAILS ? String(error?.message || error) : undefined,
@@ -66,5 +66,5 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  return methodNotAllowed(res, ["GET", "PUT", "DELETE"]);
+  return methodNotAllowed(req, res, ["GET", "PUT", "DELETE"]);
 };
