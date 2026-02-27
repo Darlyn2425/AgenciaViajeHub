@@ -29,6 +29,10 @@ import { renderSettings } from "./modules/settings.js";
 let currentRoute = "dashboard";
 let searchTerm = "";
 let tokenRefreshTimer = null;
+let settingsSyncTimer = null;
+let lastSettingsSyncAt = 0;
+let settingsSyncWarningShown = false;
+const SETTINGS_SYNC_INTERVAL_MS = 20000;
 
 const ROUTE_TITLES = {
     dashboard: "Dashboard",
@@ -70,6 +74,9 @@ function startTokenAutoRefresh() {
 }
 
 async function syncSettingsFromApi() {
+    const now = Date.now();
+    if ((now - lastSettingsSyncAt) < 2000) return;
+    lastSettingsSyncAt = now;
     try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 2000);
@@ -93,9 +100,31 @@ async function syncSettingsFromApi() {
                 window.render();
             }
         }
+        settingsSyncWarningShown = false;
     } catch {
-        // keep local settings as fallback
+        if (!settingsSyncWarningShown && isAuthenticated()) {
+            toast("No se pudo sincronizar configuración con el servidor.");
+            settingsSyncWarningShown = true;
+        }
     }
+}
+
+function stopSettingsAutoSync() {
+    if (!settingsSyncTimer) return;
+    clearInterval(settingsSyncTimer);
+    settingsSyncTimer = null;
+}
+
+function startSettingsAutoSync() {
+    stopSettingsAutoSync();
+    if (!isAuthenticated()) return;
+    settingsSyncTimer = setInterval(() => {
+        if (!isAuthenticated()) {
+            stopSettingsAutoSync();
+            return;
+        }
+        syncSettingsFromApi();
+    }, SETTINGS_SYNC_INTERVAL_MS);
 }
 
 function getSearchInputEl() {
@@ -273,6 +302,8 @@ function renderLoginScreen() {
     const continueAfterLogin = async (result) => {
         await ensureTenantApiToken({ silent: false });
         startTokenAutoRefresh();
+        startSettingsAutoSync();
+        await syncSettingsFromApi();
         currentRoute = getFirstAccessibleRoute();
         toast(`Bienvenido, ${result.user.name || result.user.username}`);
         render();
@@ -366,6 +397,7 @@ function openMyProfile() {
 
 function doLogout() {
     stopTokenAutoRefresh();
+    stopSettingsAutoSync();
     logout();
     setAppLocked(true);
     render();
@@ -446,6 +478,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isAuthenticated()) {
             await ensureTenantApiToken({ silent: true });
             startTokenAutoRefresh();
+            startSettingsAutoSync();
+            await syncSettingsFromApi();
         }
         render();
     };
@@ -455,6 +489,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (document.visibilityState !== "visible") return;
         if (!isAuthenticated()) return;
         ensureTenantApiToken({ silent: true });
+        syncSettingsFromApi();
     });
 
     // 9. Deferred persistence/sync to avoid blocking first paint.

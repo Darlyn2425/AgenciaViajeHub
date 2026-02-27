@@ -22,11 +22,13 @@ let quotationsApiSyncStarted = false;
 let quotationsApiSyncCompleted = false;
 const API_TIMEOUT_MS = 8000;
 const QUOTATIONS_PAGE_SIZE = 20;
+const QUOTATIONS_STALE_MS = 15000;
 let quotationsPage = 1;
 let quotationsLastSearchTerm = "";
 let quotationsTotal = 0;
 let quotationsLastFetchKey = "";
 let quotationsIsLoading = false;
+let quotationsLastSyncedAt = 0;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -136,6 +138,7 @@ async function ensureQuotationsApiSyncOnce() {
     quotationsTotal = remote.total;
     saveState();
     quotationsApiSyncCompleted = true;
+    quotationsLastSyncedAt = Date.now();
     rerenderQuotationsView();
   } catch {
     quotationsApiSyncStarted = false;
@@ -295,7 +298,8 @@ export function renderQuotations(searchTerm = "") {
     quotationsLastSearchTerm = searchTerm;
     quotationsApiSyncStarted = false;
   }
-  if (!quotationsApiSyncCompleted || !quotationsApiSyncStarted) {
+  const stale = (Date.now() - quotationsLastSyncedAt) > QUOTATIONS_STALE_MS;
+  if (!quotationsApiSyncCompleted || !quotationsApiSyncStarted || stale) {
     ensureQuotationsApiSyncOnce();
   }
   const canManage = hasPermission("quotations.manage") || hasPermission("*");

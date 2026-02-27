@@ -25,15 +25,16 @@ function ensureTenantIdInternal() {
 }
 
 async function syncSettingsToApi() {
-    try {
-        await fetch(withTenantQuery("/api/settings"), {
+    const response = await fetch(withTenantQuery("/api/settings"), {
             method: "PUT",
             headers: tenantHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({ settings: state.settings }),
         });
-    } catch {
-        // Keep local settings if remote sync fails.
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
     }
+    return data;
 }
 
 function ensureModuleConfig() {
@@ -146,27 +147,42 @@ export function openSettingsModal() {
         <div class="field col-6"><label>% Recargo por tarjeta</label><input id="sFee" value="${escapeHtml(String(s.cardFeePct))}" /></div>
       </div>
     `,
-        onSave: () => {
-            s.companyName = document.getElementById("sCompany").value.trim() || s.companyName;
-            if (!s.tenantId || s.tenantId === "default") {
-                s.tenantId = slugify(s.companyName) || `tenant-${Date.now().toString(36)}`;
+        onSave: async () => {
+            const nextSettings = { ...s };
+            nextSettings.companyName = document.getElementById("sCompany").value.trim() || nextSettings.companyName;
+            if (!nextSettings.tenantId || nextSettings.tenantId === "default") {
+                nextSettings.tenantId = slugify(nextSettings.companyName) || `tenant-${Date.now().toString(36)}`;
             }
-            s.phone = document.getElementById("sPhone").value.trim() || s.phone;
-            s.email = document.getElementById("sEmail").value.trim() || s.email;
-            s.instagram = document.getElementById("sIg").value.trim() || s.instagram;
-            s.facebook = document.getElementById("sFb").value.trim() || s.facebook;
-            s.website = document.getElementById("sWeb").value.trim() || s.website;
-            s.cardFeePct = parseNum(document.getElementById("sFee").value) || s.cardFeePct;
+            nextSettings.phone = document.getElementById("sPhone").value.trim() || nextSettings.phone;
+            nextSettings.email = document.getElementById("sEmail").value.trim() || nextSettings.email;
+            nextSettings.instagram = document.getElementById("sIg").value.trim() || nextSettings.instagram;
+            nextSettings.facebook = document.getElementById("sFb").value.trim() || nextSettings.facebook;
+            nextSettings.website = document.getElementById("sWeb").value.trim() || nextSettings.website;
+            nextSettings.cardFeePct = parseNum(document.getElementById("sFee").value) || nextSettings.cardFeePct;
 
             // Commit logo if staged
             if (window.__tmpLogoDataUrl) {
-                if (window.__tmpLogoDataUrl === "__REMOVE__") { s.logoDataUrl = ""; }
-                else { s.logoDataUrl = window.__tmpLogoDataUrl; }
+                if (window.__tmpLogoDataUrl === "__REMOVE__") { nextSettings.logoDataUrl = ""; }
+                else { nextSettings.logoDataUrl = window.__tmpLogoDataUrl; }
                 window.__tmpLogoDataUrl = "";
             }
 
-            saveState();
-            syncSettingsToApi();
+            const prev = { ...state.settings };
+            state.settings = nextSettings;
+
+            try {
+                const synced = await syncSettingsToApi();
+                state.settings = {
+                    ...state.settings,
+                    ...(synced?.settings || {}),
+                };
+                saveState();
+            } catch (error) {
+                state.settings = prev;
+                saveState();
+                toast(`No se pudo guardar en servidor: ${error?.message || error}`);
+                return;
+            }
             closeModal();
             if (window.render) window.render();
         }

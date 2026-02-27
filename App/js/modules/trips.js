@@ -12,10 +12,12 @@ import {
 } from "../utils/tenant-data.js";
 
 const API_TIMEOUT_MS = 8000;
+const TRIPS_STALE_MS = 15000;
 let tripsApiSyncStarted = false;
 let tripsApiSyncCompleted = false;
 let tripsIsLoading = false;
 let tripsLastFetchKey = "";
+let tripsLastSyncedAt = 0;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -72,6 +74,7 @@ async function syncTripsFromApi(searchTerm = "") {
     refreshTripNames();
     saveState();
     tripsApiSyncCompleted = true;
+    tripsLastSyncedAt = Date.now();
     if (window.render) window.render();
   } catch (error) {
     console.warn("[trips] sync warning:", error?.message || error);
@@ -95,7 +98,8 @@ function syncTripInBackground(payload) {
 }
 
 export function renderTrips(searchTerm = "") {
-  if (!tripsApiSyncCompleted || !tripsApiSyncStarted) {
+  const stale = (Date.now() - tripsLastSyncedAt) > TRIPS_STALE_MS;
+  if (!tripsApiSyncCompleted || !tripsApiSyncStarted || stale) {
     syncTripsFromApi(searchTerm);
   }
 

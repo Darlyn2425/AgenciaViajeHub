@@ -18,10 +18,12 @@ window.runItineraryAction = runItineraryAction;
 
 let itineraryPdfBusy = false;
 const API_TIMEOUT_MS = 8000;
+const ITINERARIES_STALE_MS = 15000;
 let itinerariesApiSyncStarted = false;
 let itinerariesApiSyncCompleted = false;
 let itinerariesIsLoading = false;
 let itinerariesLastFetchKey = "";
+let itinerariesLastSyncedAt = 0;
 
 function getConfiguredItineraryStatuses() {
     const itineraryList = state.settings?.modules?.itineraries?.statuses || [];
@@ -90,6 +92,7 @@ async function syncItinerariesFromApi(searchTerm = "") {
         replaceTenantItems("itineraries", remote.items);
         saveState();
         itinerariesApiSyncCompleted = true;
+        itinerariesLastSyncedAt = Date.now();
         if (window.render) window.render();
     } catch (error) {
         console.warn("[itineraries] sync warning:", error?.message || error);
@@ -112,7 +115,8 @@ function syncItineraryInBackground(payload) {
 }
 
 export function renderItineraries(searchTerm = "") {
-    if (!itinerariesApiSyncCompleted || !itinerariesApiSyncStarted) {
+    const stale = (Date.now() - itinerariesLastSyncedAt) > ITINERARIES_STALE_MS;
+    if (!itinerariesApiSyncCompleted || !itinerariesApiSyncStarted || stale) {
         syncItinerariesFromApi(searchTerm);
     }
     const itineraries = getTenantItems("itineraries");

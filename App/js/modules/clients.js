@@ -13,10 +13,12 @@ import {
 } from "../utils/tenant-data.js";
 
 const API_TIMEOUT_MS = 8000;
+const CLIENTS_STALE_MS = 15000;
 let clientsApiSyncStarted = false;
 let clientsApiSyncCompleted = false;
 let clientsIsLoading = false;
 let clientsLastFetchKey = "";
+let clientsLastSyncedAt = 0;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -72,6 +74,7 @@ async function syncClientsFromApi(searchTerm = "") {
         replaceTenantItems("clients", remote.items);
         saveState();
         clientsApiSyncCompleted = true;
+        clientsLastSyncedAt = Date.now();
         if (window.render) window.render();
     } catch (error) {
         console.warn("[clients] sync warning:", error?.message || error);
@@ -94,7 +97,8 @@ function syncClientInBackground(payload) {
 }
 
 export function renderClients(searchTerm = "") {
-    if (!clientsApiSyncCompleted || !clientsApiSyncStarted) {
+    const stale = (Date.now() - clientsLastSyncedAt) > CLIENTS_STALE_MS;
+    if (!clientsApiSyncCompleted || !clientsApiSyncStarted || stale) {
         syncClientsFromApi(searchTerm);
     }
 

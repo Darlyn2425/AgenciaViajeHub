@@ -22,6 +22,7 @@ window.togglePlanMenu = togglePlanMenu;
 
 const API_TIMEOUT_MS = 8000;
 const PAYMENT_PLANS_PAGE_SIZE = 20;
+const PAYMENT_PLANS_STALE_MS = 15000;
 let paymentPlansApiSyncStarted = false;
 let paymentPlansApiSyncCompleted = false;
 let paymentPlansIsLoading = false;
@@ -29,6 +30,7 @@ let paymentPlansPage = 1;
 let paymentPlansLastSearchTerm = "";
 let paymentPlansTotal = 0;
 let paymentPlansLastFetchKey = "";
+let paymentPlansLastSyncedAt = 0;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -193,6 +195,7 @@ async function ensurePaymentPlansApiSyncOnce() {
         }
         saveState();
         paymentPlansApiSyncCompleted = true;
+        paymentPlansLastSyncedAt = Date.now();
         rerenderPaymentPlansView();
     } catch {
         paymentPlansApiSyncStarted = false;
@@ -218,7 +221,8 @@ export function renderPaymentPlans(searchTerm = "") {
         paymentPlansLastSearchTerm = searchTerm;
         paymentPlansApiSyncStarted = false;
     }
-    if (!paymentPlansApiSyncCompleted || !paymentPlansApiSyncStarted) {
+    const stale = (Date.now() - paymentPlansLastSyncedAt) > PAYMENT_PLANS_STALE_MS;
+    if (!paymentPlansApiSyncCompleted || !paymentPlansApiSyncStarted || stale) {
         ensurePaymentPlansApiSyncOnce();
     }
     const canManage = hasPermission("paymentPlans.manage") || hasPermission("*");
