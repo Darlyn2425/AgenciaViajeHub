@@ -22,6 +22,23 @@ let tripsLastSyncedAt = 0;
 let tripsLastLocalWriteAt = 0;
 let tripsSyncErrorNotified = false;
 
+function getActiveRoute() {
+  return document.querySelector(".nav-item.active")?.dataset?.route || "";
+}
+
+function getCurrentSearchTermFromInput() {
+  const input = document.getElementById("globalSearch") || document.getElementById("searchInput");
+  return (input?.value || "").toLowerCase();
+}
+
+function rerenderTripsView() {
+  if (getActiveRoute() === "trips") {
+    renderTrips(getCurrentSearchTermFromInput());
+    return;
+  }
+  if (window.render) window.render();
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -79,7 +96,7 @@ async function syncTripsFromApi(searchTerm = "") {
     tripsApiSyncCompleted = true;
     tripsLastSyncedAt = Date.now();
     tripsSyncErrorNotified = false;
-    if (window.render) window.render();
+    rerenderTripsView();
   } catch (error) {
     if (!tripsSyncErrorNotified) {
       toast(`No se pudo sincronizar viajes: ${error?.message || error}`);
@@ -97,7 +114,7 @@ function syncTripInBackground(payload) {
       upsertTenantItem("trips", remoteItem);
       refreshTripNames();
       saveState();
-      if (window.render) window.render();
+      rerenderTripsView();
     })
     .catch((error) => {
       toast(`Viaje guardado localmente. Error al sincronizar: ${error?.message || error}`);
@@ -185,7 +202,7 @@ export function openTripModal(existing = null) {
       refreshTripNames();
       saveState();
       closeModal();
-      if (window.render) window.render();
+      rerenderTripsView();
       syncTripInBackground(payload);
     }
   });
@@ -204,13 +221,14 @@ export function deleteTrip(id) {
   tripsLastLocalWriteAt = Date.now();
   refreshTripNames();
   saveState();
-  if (window.render) window.render();
+  rerenderTripsView();
+  toast("Viaje eliminado. Sincronizando...");
 
   deleteTripFromApi(id).catch((error) => {
     if (backup) upsertTenantItem("trips", backup);
     refreshTripNames();
     saveState();
-    if (window.render) window.render();
+    rerenderTripsView();
     toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
   });
 }

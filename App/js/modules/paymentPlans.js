@@ -675,7 +675,7 @@ export function deletePaymentPlan(id) {
     markPaymentPlansLocalWrite();
     saveState();
     rerenderPaymentPlansView();
-    toast("Plan eliminado.");
+    toast("Plan eliminado. Sincronizando...");
     Promise.resolve().then(async () => {
         try {
             await deletePaymentPlanFromApi(id);

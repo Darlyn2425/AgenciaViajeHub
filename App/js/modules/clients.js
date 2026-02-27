@@ -23,6 +23,23 @@ let clientsLastSyncedAt = 0;
 let clientsLastLocalWriteAt = 0;
 let clientsSyncErrorNotified = false;
 
+function getActiveRoute() {
+    return document.querySelector(".nav-item.active")?.dataset?.route || "";
+}
+
+function getCurrentSearchTermFromInput() {
+    const input = document.getElementById("globalSearch") || document.getElementById("searchInput");
+    return (input?.value || "").toLowerCase();
+}
+
+function rerenderClientsView() {
+    if (getActiveRoute() === "clients") {
+        renderClients(getCurrentSearchTermFromInput());
+        return;
+    }
+    if (window.render) window.render();
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -79,7 +96,7 @@ async function syncClientsFromApi(searchTerm = "") {
         clientsApiSyncCompleted = true;
         clientsLastSyncedAt = Date.now();
         clientsSyncErrorNotified = false;
-        if (window.render) window.render();
+        rerenderClientsView();
     } catch (error) {
         if (!clientsSyncErrorNotified) {
             toast(`No se pudo sincronizar clientes: ${error?.message || error}`);
@@ -96,7 +113,7 @@ function syncClientInBackground(payload) {
         .then((remoteItem) => {
             upsertTenantItem("clients", remoteItem);
             saveState();
-            if (window.render) window.render();
+            rerenderClientsView();
         })
         .catch((error) => {
             toast(`Cliente guardado localmente. Error al sincronizar: ${error?.message || error}`);
@@ -197,7 +214,7 @@ export function openClientModal(existing = null) {
             clientsLastLocalWriteAt = Date.now();
             saveState();
             closeModal();
-            if (window.render) window.render();
+            rerenderClientsView();
             syncClientInBackground(payload);
         }
     });
@@ -219,12 +236,13 @@ export function deleteClient(id) {
     removeTenantItems("clients", x => x.id === id);
     clientsLastLocalWriteAt = Date.now();
     saveState();
-    if (window.render) window.render();
+    rerenderClientsView();
+    toast("Cliente eliminado. Sincronizando...");
 
     deleteClientFromApi(id).catch((error) => {
         if (backup) upsertTenantItem("clients", backup);
         saveState();
-        if (window.render) window.render();
+        rerenderClientsView();
         toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
     });
 }

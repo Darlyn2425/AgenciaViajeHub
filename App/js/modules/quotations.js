@@ -1212,7 +1212,7 @@ export function deleteQuotation(id) {
   markQuotationsLocalWrite();
   saveState();
   rerenderQuotationsView();
-  toast("Cotización eliminada.");
+  toast("Cotización eliminada. Sincronizando...");
   Promise.resolve().then(async () => {
     try {
       await deleteQuotationFromApi(id);

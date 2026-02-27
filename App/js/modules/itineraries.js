@@ -29,6 +29,23 @@ let itinerariesLastSyncedAt = 0;
 let itinerariesLastLocalWriteAt = 0;
 let itinerariesSyncErrorNotified = false;
 
+function getActiveRoute() {
+    return document.querySelector(".nav-item.active")?.dataset?.route || "";
+}
+
+function getCurrentSearchTermFromInput() {
+    const input = document.getElementById("globalSearch") || document.getElementById("searchInput");
+    return (input?.value || "").toLowerCase();
+}
+
+function rerenderItinerariesView() {
+    if (getActiveRoute() === "itineraries") {
+        renderItineraries(getCurrentSearchTermFromInput());
+        return;
+    }
+    if (window.render) window.render();
+}
+
 function buildItineraryPreviewCacheKey(itinerary) {
     const safe = {
         id: itinerary?.id || "",
@@ -151,7 +168,7 @@ async function syncItinerariesFromApi(searchTerm = "") {
         itinerariesApiSyncCompleted = true;
         itinerariesLastSyncedAt = Date.now();
         itinerariesSyncErrorNotified = false;
-        if (window.render) window.render();
+        rerenderItinerariesView();
     } catch (error) {
         if (!itinerariesSyncErrorNotified) {
             toast(`No se pudo sincronizar itinerarios: ${error?.message || error}`);
@@ -168,7 +185,7 @@ function syncItineraryInBackground(payload) {
         .then((remoteItem) => {
             upsertTenantItem("itineraries", remoteItem);
             saveState();
-            if (window.render) window.render();
+            rerenderItinerariesView();
         })
         .catch((error) => {
             toast(`No se pudo sincronizar itinerario: ${error?.message || error}`);
@@ -801,7 +818,7 @@ export function openItineraryModal(existing = null) {
             itinerariesLastLocalWriteAt = Date.now();
             saveState();
             closeModal();
-            if (window.render) window.render();
+            rerenderItinerariesView();
             syncItineraryInBackground(payload);
         }
     });
@@ -954,11 +971,12 @@ export function deleteItinerary(id) {
     removeTenantItems("itineraries", x => x.id === id);
     itinerariesLastLocalWriteAt = Date.now();
     saveState();
-    if (window.render) window.render();
+    rerenderItinerariesView();
+    toast("Itinerario eliminado. Sincronizando...");
     deleteItineraryFromApi(id).catch((error) => {
         if (backup) upsertTenantItem("itineraries", backup);
         saveState();
-        if (window.render) window.render();
+        rerenderItinerariesView();
         toast(`No se pudo eliminar en servidor: ${error?.message || error}`);
     });
 }
