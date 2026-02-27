@@ -1,7 +1,7 @@
 const { json, methodNotAllowed } = require("../lib/http");
 const { readJsonBody } = require("../lib/request");
 const { normalizeTenantId } = require("../lib/tenant");
-const { verifyCredentials, updateMyProfile, listUsers, upsertUser, deleteUser, resetAccess } = require("../lib/auth-store");
+const { verifyCredentialsAnyTenant, updateMyProfile, listUsers, upsertUser, deleteUser, resetAccess } = require("../lib/auth-store");
 const { signAuthToken, getTokenTtl } = require("../lib/auth-token");
 const { resolveSessionFromRequest } = require("../lib/auth-session");
 const { isOriginAllowed, applyApiSecurityHeaders } = require("../lib/security");
@@ -48,9 +48,10 @@ module.exports = async function handler(req, res) {
     if (route === "login") {
       if (req.method !== "POST") return methodNotAllowed(req, res, allow);
       const body = await readJsonBody(req);
-      const tenantId = normalizeTenantId(body?.tenantId || req.headers?.["x-tenant-id"] || req.query?.tenantId || "default");
-      const auth = await verifyCredentials(tenantId, body?.username, body?.password);
+      const tenantHint = normalizeTenantId(body?.tenantId || req.headers?.["x-tenant-id"] || req.query?.tenantId || "default");
+      const auth = await verifyCredentialsAnyTenant(body?.username, body?.password, tenantHint);
       if (!auth.ok) return json(req, res, 401, { ok: false, error: auth.message || "Unauthorized" });
+      const tenantId = normalizeTenantId(auth.tenantId || tenantHint || "default");
 
       const token = signAuthToken({
         tenantId,

@@ -56,6 +56,10 @@ function applySession(data = {}, { persistUsers = false } = {}) {
     }
     if (roles.length) state.auth.roles = roles;
     if (persistUsers && Array.isArray(data?.users)) state.auth.users = data.users;
+    if (data?.tenantId) {
+        const nextTenant = String(data.tenantId || "").trim();
+        if (nextTenant) state.settings.tenantId = nextTenant;
+    }
     saveState();
 }
 
