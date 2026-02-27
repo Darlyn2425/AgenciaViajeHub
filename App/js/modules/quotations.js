@@ -1052,25 +1052,27 @@ export function openQuotationModal(existing = null) {
       });
     }
 
-    // Date inputs: bind without inline handlers and provide text fallback for non-date browsers.
-    const supportsDateInput = (() => {
-      const test = document.createElement("input");
-      test.setAttribute("type", "date");
-      return test.type === "date";
-    })();
+    // Date inputs: keep native type=date so browsers with picker continue showing calendar UI.
     const bindDateRecalc = () => {
       if (typeof window.calcDates === "function") window.calcDates();
     };
+    const openNativeDatePicker = (ev) => {
+      const el = ev?.currentTarget;
+      if (!el) return;
+      if (typeof el.showPicker === "function") {
+        try {
+          el.showPicker();
+        } catch {
+          // Some browsers block showPicker on non-user-initiated events.
+        }
+      }
+    };
     [qStart, qEnd].forEach((el) => {
       if (!el) return;
-      if (!supportsDateInput) {
-        el.type = "text";
-        el.placeholder = "YYYY-MM-DD";
-        el.inputMode = "numeric";
-      }
       el.addEventListener("change", bindDateRecalc);
       el.addEventListener("input", bindDateRecalc);
       el.addEventListener("blur", bindDateRecalc);
+      el.addEventListener("click", openNativeDatePicker);
     });
 
     if (qAddItineraryDay && qItineraryList) {
