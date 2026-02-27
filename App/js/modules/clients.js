@@ -14,11 +14,13 @@ import {
 
 const API_TIMEOUT_MS = 8000;
 const CLIENTS_STALE_MS = 15000;
+const CLIENTS_SYNC_GRACE_MS = 12000;
 let clientsApiSyncStarted = false;
 let clientsApiSyncCompleted = false;
 let clientsIsLoading = false;
 let clientsLastFetchKey = "";
 let clientsLastSyncedAt = 0;
+let clientsLastLocalWriteAt = 0;
 let clientsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
@@ -103,7 +105,8 @@ function syncClientInBackground(payload) {
 
 export function renderClients(searchTerm = "") {
     const stale = (Date.now() - clientsLastSyncedAt) > CLIENTS_STALE_MS;
-    if (!clientsApiSyncCompleted || !clientsApiSyncStarted || stale) {
+    const recentlyChanged = (Date.now() - clientsLastLocalWriteAt) < CLIENTS_SYNC_GRACE_MS;
+    if ((!clientsApiSyncCompleted || !clientsApiSyncStarted || stale) && !recentlyChanged) {
         syncClientsFromApi(searchTerm);
     }
 
@@ -191,6 +194,7 @@ export function openClientModal(existing = null) {
             if (existing) Object.assign(existing, payload);
             else pushTenantItem("clients", payload);
 
+            clientsLastLocalWriteAt = Date.now();
             saveState();
             closeModal();
             if (window.render) window.render();
@@ -213,6 +217,7 @@ export function deleteClient(id) {
     if (!confirm("¿Eliminar cliente?")) return;
     const backup = findTenantItem("clients", x => x.id === id);
     removeTenantItems("clients", x => x.id === id);
+    clientsLastLocalWriteAt = Date.now();
     saveState();
     if (window.render) window.render();
 

@@ -20,11 +20,13 @@ let itineraryPdfBusy = false;
 const itineraryPdfPreviewCache = new Map();
 const API_TIMEOUT_MS = 8000;
 const ITINERARIES_STALE_MS = 15000;
+const ITINERARIES_SYNC_GRACE_MS = 12000;
 let itinerariesApiSyncStarted = false;
 let itinerariesApiSyncCompleted = false;
 let itinerariesIsLoading = false;
 let itinerariesLastFetchKey = "";
 let itinerariesLastSyncedAt = 0;
+let itinerariesLastLocalWriteAt = 0;
 let itinerariesSyncErrorNotified = false;
 
 function buildItineraryPreviewCacheKey(itinerary) {
@@ -175,7 +177,8 @@ function syncItineraryInBackground(payload) {
 
 export function renderItineraries(searchTerm = "") {
     const stale = (Date.now() - itinerariesLastSyncedAt) > ITINERARIES_STALE_MS;
-    if (!itinerariesApiSyncCompleted || !itinerariesApiSyncStarted || stale) {
+    const recentlyChanged = (Date.now() - itinerariesLastLocalWriteAt) < ITINERARIES_SYNC_GRACE_MS;
+    if ((!itinerariesApiSyncCompleted || !itinerariesApiSyncStarted || stale) && !recentlyChanged) {
         syncItinerariesFromApi(searchTerm);
     }
     const itineraries = getTenantItems("itineraries");
@@ -795,6 +798,7 @@ export function openItineraryModal(existing = null) {
             if (existing) Object.assign(existing, payload);
             else pushTenantItem("itineraries", payload);
 
+            itinerariesLastLocalWriteAt = Date.now();
             saveState();
             closeModal();
             if (window.render) window.render();
@@ -948,6 +952,7 @@ export function duplicateItinerary(id) {
 export function deleteItinerary(id) {
     const backup = findTenantItem("itineraries", x => x.id === id);
     removeTenantItems("itineraries", x => x.id === id);
+    itinerariesLastLocalWriteAt = Date.now();
     saveState();
     if (window.render) window.render();
     deleteItineraryFromApi(id).catch((error) => {

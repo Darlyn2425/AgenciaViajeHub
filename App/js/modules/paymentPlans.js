@@ -23,6 +23,7 @@ window.togglePlanMenu = togglePlanMenu;
 const API_TIMEOUT_MS = 8000;
 const PAYMENT_PLANS_PAGE_SIZE = 20;
 const PAYMENT_PLANS_STALE_MS = 15000;
+const PAYMENT_PLANS_SYNC_GRACE_MS = 12000;
 let paymentPlansApiSyncStarted = false;
 let paymentPlansApiSyncCompleted = false;
 let paymentPlansIsLoading = false;
@@ -31,6 +32,7 @@ let paymentPlansLastSearchTerm = "";
 let paymentPlansTotal = 0;
 let paymentPlansLastFetchKey = "";
 let paymentPlansLastSyncedAt = 0;
+let paymentPlansLastLocalWriteAt = 0;
 let paymentPlansSyncErrorNotified = false;
 const paymentPlanPdfPreviewCache = new Map();
 
@@ -125,6 +127,10 @@ function getCurrentSearchTermFromInput() {
     return (input?.value || "").toLowerCase();
 }
 
+function markPaymentPlansLocalWrite() {
+    paymentPlansLastLocalWriteAt = Date.now();
+}
+
 function rerenderPaymentPlansView() {
     if (getActiveRoute() === "payment-plans") {
         renderPaymentPlans(getCurrentSearchTermFromInput());
@@ -152,9 +158,6 @@ function syncPaymentPlanInBackground(plan) {
                 saveState();
                 rerenderPaymentPlansView();
             }
-            paymentPlansApiSyncStarted = false;
-            paymentPlansLastFetchKey = "";
-            ensurePaymentPlansApiSyncOnce();
         } catch {
             toast("Guardado local OK. No se pudo sincronizar con la base de datos.");
         }
@@ -229,7 +232,8 @@ export function renderPaymentPlans(searchTerm = "") {
         paymentPlansApiSyncStarted = false;
     }
     const stale = (Date.now() - paymentPlansLastSyncedAt) > PAYMENT_PLANS_STALE_MS;
-    if (!paymentPlansApiSyncCompleted || !paymentPlansApiSyncStarted || stale) {
+    const recentlyChanged = (Date.now() - paymentPlansLastLocalWriteAt) < PAYMENT_PLANS_SYNC_GRACE_MS;
+    if ((!paymentPlansApiSyncCompleted || !paymentPlansApiSyncStarted || stale) && !recentlyChanged) {
         ensurePaymentPlansApiSyncOnce();
     }
     const canManage = hasPermission("paymentPlans.manage") || hasPermission("*");
@@ -537,6 +541,7 @@ export function openPaymentPlanModal(existing = null) {
             if (isEditing) Object.assign(existing, payload);
             else state.paymentPlans.push(payload);
 
+            markPaymentPlansLocalWrite();
             saveState();
             closeModal();
             rerenderPaymentPlansView();
@@ -667,15 +672,13 @@ export function deletePaymentPlan(id) {
     }
     if (!confirm("¿Eliminar plan de pago?")) return;
     state.paymentPlans = state.paymentPlans.filter(x => x.id !== id);
+    markPaymentPlansLocalWrite();
     saveState();
     rerenderPaymentPlansView();
     toast("Plan eliminado.");
     Promise.resolve().then(async () => {
         try {
             await deletePaymentPlanFromApi(id);
-            paymentPlansApiSyncStarted = false;
-            paymentPlansLastFetchKey = "";
-            ensurePaymentPlansApiSyncOnce();
         } catch {
             toast("Se eliminó localmente, pero falló eliminar en la base de datos.");
         }

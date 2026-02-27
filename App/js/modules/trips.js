@@ -13,11 +13,13 @@ import {
 
 const API_TIMEOUT_MS = 8000;
 const TRIPS_STALE_MS = 15000;
+const TRIPS_SYNC_GRACE_MS = 12000;
 let tripsApiSyncStarted = false;
 let tripsApiSyncCompleted = false;
 let tripsIsLoading = false;
 let tripsLastFetchKey = "";
 let tripsLastSyncedAt = 0;
+let tripsLastLocalWriteAt = 0;
 let tripsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
@@ -104,7 +106,8 @@ function syncTripInBackground(payload) {
 
 export function renderTrips(searchTerm = "") {
   const stale = (Date.now() - tripsLastSyncedAt) > TRIPS_STALE_MS;
-  if (!tripsApiSyncCompleted || !tripsApiSyncStarted || stale) {
+  const recentlyChanged = (Date.now() - tripsLastLocalWriteAt) < TRIPS_SYNC_GRACE_MS;
+  if ((!tripsApiSyncCompleted || !tripsApiSyncStarted || stale) && !recentlyChanged) {
     syncTripsFromApi(searchTerm);
   }
 
@@ -178,6 +181,7 @@ export function openTripModal(existing = null) {
       if (existing) Object.assign(existing, payload);
       else pushTenantItem("trips", payload);
 
+      tripsLastLocalWriteAt = Date.now();
       refreshTripNames();
       saveState();
       closeModal();
@@ -197,6 +201,7 @@ export function deleteTrip(id) {
   if (!confirm("¿Eliminar trip?")) return;
   const backup = findTenantItem("trips", x => x.id === id);
   removeTenantItems("trips", x => x.id === id);
+  tripsLastLocalWriteAt = Date.now();
   refreshTripNames();
   saveState();
   if (window.render) window.render();

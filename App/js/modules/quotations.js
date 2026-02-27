@@ -24,12 +24,14 @@ let quotationsApiSyncCompleted = false;
 const API_TIMEOUT_MS = 8000;
 const QUOTATIONS_PAGE_SIZE = 20;
 const QUOTATIONS_STALE_MS = 15000;
+const QUOTATIONS_SYNC_GRACE_MS = 12000;
 let quotationsPage = 1;
 let quotationsLastSearchTerm = "";
 let quotationsTotal = 0;
 let quotationsLastFetchKey = "";
 let quotationsIsLoading = false;
 let quotationsLastSyncedAt = 0;
+let quotationsLastLocalWriteAt = 0;
 let quotationsSyncErrorNotified = false;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
@@ -174,6 +176,10 @@ function getCurrentSearchTermFromInput() {
   return (input?.value || "").toLowerCase();
 }
 
+function markQuotationsLocalWrite() {
+  quotationsLastLocalWriteAt = Date.now();
+}
+
 function rerenderQuotationsView() {
   if (getActiveRoute() === "quotations") {
     renderQuotations(getCurrentSearchTermFromInput());
@@ -306,7 +312,8 @@ export function renderQuotations(searchTerm = "") {
     quotationsApiSyncStarted = false;
   }
   const stale = (Date.now() - quotationsLastSyncedAt) > QUOTATIONS_STALE_MS;
-  if (!quotationsApiSyncCompleted || !quotationsApiSyncStarted || stale) {
+  const recentlyChanged = (Date.now() - quotationsLastLocalWriteAt) < QUOTATIONS_SYNC_GRACE_MS;
+  if ((!quotationsApiSyncCompleted || !quotationsApiSyncStarted || stale) && !recentlyChanged) {
     ensureQuotationsApiSyncOnce();
   }
   const canManage = hasPermission("quotations.manage") || hasPermission("*");
@@ -862,6 +869,7 @@ export function openQuotationModal(existing = null) {
       };
 
       applyPayload(payload);
+      markQuotationsLocalWrite();
 
       try {
         saveState();
@@ -932,8 +940,6 @@ export function openQuotationModal(existing = null) {
         }
       }
 
-      quotationsApiSyncStarted = false;
-      quotationsLastFetchKey = "";
       closeModal();
       rerenderQuotationsView();
       toast("Cotización guardada.");
@@ -1203,9 +1209,8 @@ export function deleteQuotation(id) {
   }
   if (!confirm("¿Eliminar cotización?")) return;
   state.quotations = state.quotations.filter(x => x.id !== id);
+  markQuotationsLocalWrite();
   saveState();
-  quotationsApiSyncStarted = false;
-  quotationsLastFetchKey = "";
   rerenderQuotationsView();
   toast("Cotización eliminada.");
   Promise.resolve().then(async () => {
