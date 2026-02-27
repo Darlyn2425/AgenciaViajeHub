@@ -2,7 +2,7 @@ import { state, saveState } from "../core/state.js";
 import { setContent, renderModuleToolbar, openModal, closeModal, toast } from "../utils/ui.js";
 import { escapeHtml, parseNum, fileToDataUrl } from "../utils/helpers.js";
 import { withTenantQuery, tenantHeaders } from "../utils/tenant.js";
-import { hasPermission, getUsers, getRoles, getCurrentUser, upsertUser, removeUser, loadUsersAndRoles } from "../core/auth.js";
+import { hasPermission, getUsers, getRoles, getCurrentUser, upsertUser, removeUser, loadUsersAndRoles, refreshAuthSession, logout } from "../core/auth.js";
 
 window.openSettingsModal = openSettingsModal;
 window.openStatusManager = openStatusManager;
@@ -20,11 +20,10 @@ function slugify(value = "") {
 
 function ensureTenantIdInternal() {
     if (state.settings?.tenantId) return;
-    const fromCompany = slugify(state.settings?.companyName || "");
-    state.settings.tenantId = fromCompany || `tenant-${Date.now().toString(36)}`;
+    state.settings.tenantId = String(state.auth?.tenantId || "default").trim() || "default";
 }
 
-async function syncSettingsToApi() {
+async function syncSettingsToApi({ retryOnAuth = true } = {}) {
     const response = await fetch(withTenantQuery("/api/settings"), {
             method: "PUT",
             headers: tenantHeaders({ "Content-Type": "application/json" }),
@@ -32,6 +31,15 @@ async function syncSettingsToApi() {
         });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data?.ok) {
+        if (response.status === 401 && retryOnAuth) {
+            const refreshed = await refreshAuthSession();
+            if (refreshed?.ok) {
+                return syncSettingsToApi({ retryOnAuth: false });
+            }
+            logout();
+            if (window.render) window.render();
+            throw new Error("Sesion expirada. Inicia sesion de nuevo.");
+        }
         throw new Error(data?.error || `HTTP ${response.status}`);
     }
     return data;
@@ -150,9 +158,7 @@ export function openSettingsModal() {
         onSave: async () => {
             const nextSettings = { ...s };
             nextSettings.companyName = document.getElementById("sCompany").value.trim() || nextSettings.companyName;
-            if (!nextSettings.tenantId || nextSettings.tenantId === "default") {
-                nextSettings.tenantId = slugify(nextSettings.companyName) || `tenant-${Date.now().toString(36)}`;
-            }
+            nextSettings.tenantId = String(state.auth?.tenantId || nextSettings.tenantId || "default").trim() || "default";
             nextSettings.phone = document.getElementById("sPhone").value.trim() || nextSettings.phone;
             nextSettings.email = document.getElementById("sEmail").value.trim() || nextSettings.email;
             nextSettings.instagram = document.getElementById("sIg").value.trim() || nextSettings.instagram;

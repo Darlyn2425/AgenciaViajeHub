@@ -32,6 +32,7 @@ let paymentPlansTotal = 0;
 let paymentPlansLastFetchKey = "";
 let paymentPlansLastSyncedAt = 0;
 let paymentPlansSyncErrorNotified = false;
+const paymentPlanPdfPreviewCache = new Map();
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = API_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -1224,9 +1225,77 @@ function buildPaymentPlanFilename(p) {
     return `Plan de Pago - ${clientLabel} - ${tripLabel}.pdf`;
 }
 
+function buildPaymentPlanPreviewCacheKey(p) {
+    const safe = {
+        id: p?.id || "",
+        updatedAt: p?.updatedAtISO || p?.updatedAt || "",
+        clientName: p?.clientName || p?.clientDisplay || "",
+        tripName: p?.tripName || p?.tripDisplay || "",
+        startDate: p?.startDate || "",
+        endDate: p?.endDate || "",
+        total: p?.total || 0,
+        installments: p?.installments || p?.cuotas || 0,
+        text: p?.text || "",
+        paymentLink: p?.paymentLink || "",
+        logo: state.settings?.logoDataUrl || "",
+        company: state.settings?.companyName || "",
+    };
+    return JSON.stringify(safe);
+}
+
+function setPaymentPlanPreviewCache(id, key, filename, url) {
+    paymentPlanPdfPreviewCache.set(id, { key, filename, url });
+    if (paymentPlanPdfPreviewCache.size > 20) {
+        const first = paymentPlanPdfPreviewCache.keys().next();
+        if (!first.done) paymentPlanPdfPreviewCache.delete(first.value);
+    }
+}
+
+function openPaymentPlanPreviewModal(url, filename) {
+    openModal({
+        title: "Vista previa del plan de pago",
+        bodyHtml: `
+          <div class="card" style="padding:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+              <div class="kbd">Revisa el documento antes de descargarlo.</div>
+              <button class="btn primary" id="btnPlanPreviewDownload">Descargar PDF</button>
+            </div>
+            <iframe
+              src="${url}"
+              style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;"
+              title="Vista previa PDF plan de pago"
+            ></iframe>
+          </div>
+        `,
+        onSave: () => {
+            closeModal();
+        }
+    });
+
+    const btn = document.getElementById("btnPlanPreviewDownload");
+    if (btn) {
+        btn.onclick = () => {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            a.click();
+        };
+    }
+}
+
 async function generatePaymentPlanPDF(id, mode = "download") {
     const p = state.paymentPlans.find(x => x.id === id);
     if (!p) { toast("No encontré ese plan."); return; }
+    const cacheKey = buildPaymentPlanPreviewCacheKey(p);
+    const filename = buildPaymentPlanFilename(p);
+
+    if (mode === "preview") {
+        const cached = paymentPlanPdfPreviewCache.get(id);
+        if (cached && cached.key === cacheKey && cached.url) {
+            openPaymentPlanPreviewModal(cached.url, cached.filename || filename);
+            return;
+        }
+    }
 
     try {
         if (!window.html2pdf) {
@@ -1240,13 +1309,11 @@ async function generatePaymentPlanPDF(id, mode = "download") {
         root.innerHTML = buildPaymentPlanPdfHTML(p);
         const element = root.firstElementChild;
 
-        const filename = buildPaymentPlanFilename(p);
-
         const opt = {
             margin: [18, 18, 18, 18],
             filename: filename,
             image: { type: "jpeg", quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+            html2canvas: { scale: mode === "preview" ? 1.5 : 2, useCORS: true, backgroundColor: "#ffffff" },
             jsPDF: { unit: "pt", format: "a4", orientation: "portrait" },
             pagebreak: { mode: ["css", "legacy"] }
         };
@@ -1255,37 +1322,8 @@ async function generatePaymentPlanPDF(id, mode = "download") {
             const pdfBlob = await html2pdf().set(opt).from(element).outputPdf("blob");
             const url = URL.createObjectURL(pdfBlob);
             root.innerHTML = "";
-
-            openModal({
-                title: "Vista previa del plan de pago",
-                bodyHtml: `
-                  <div class="card" style="padding:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
-                      <div class="kbd">Revisa el documento antes de descargarlo.</div>
-                      <button class="btn primary" id="btnPlanPreviewDownload">Descargar PDF</button>
-                    </div>
-                    <iframe
-                      src="${url}"
-                      style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;"
-                      title="Vista previa PDF plan de pago"
-                    ></iframe>
-                  </div>
-                `,
-                onSave: () => {
-                    URL.revokeObjectURL(url);
-                    closeModal();
-                }
-            });
-
-            const btn = document.getElementById("btnPlanPreviewDownload");
-            if (btn) {
-                btn.onclick = () => {
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = filename;
-                    a.click();
-                };
-            }
+            setPaymentPlanPreviewCache(id, cacheKey, filename, url);
+            openPaymentPlanPreviewModal(url, filename);
             toast("Vista previa lista ✅");
             return;
         }

@@ -14,7 +14,7 @@ const ROUTE_PERMISSION = {
 };
 
 function tenantId() {
-    return String(state.settings?.tenantId || "default").trim() || "default";
+    return String(state.auth?.tenantId || state.settings?.tenantId || "default").trim() || "default";
 }
 
 function decodeJwtExp(token) {
@@ -58,7 +58,10 @@ function applySession(data = {}, { persistUsers = false } = {}) {
     if (persistUsers && Array.isArray(data?.users)) state.auth.users = data.users;
     if (data?.tenantId) {
         const nextTenant = String(data.tenantId || "").trim();
-        if (nextTenant) state.settings.tenantId = nextTenant;
+        if (nextTenant) {
+            state.auth.tenantId = nextTenant;
+            state.settings.tenantId = nextTenant;
+        }
     }
     saveState();
 }
@@ -67,6 +70,7 @@ export function ensureAuthState() {
     if (!state.auth || typeof state.auth !== "object") state.auth = {};
     if (!Array.isArray(state.auth.roles)) state.auth.roles = [];
     if (!Array.isArray(state.auth.users)) state.auth.users = [];
+    if (typeof state.auth.tenantId !== "string") state.auth.tenantId = String(state.settings?.tenantId || "default");
     if (!state.auth.currentUser || typeof state.auth.currentUser !== "object") state.auth.currentUser = null;
     if (typeof state.auth.currentUserId !== "string") state.auth.currentUserId = String(state.auth.currentUser?.id || "");
     if (!state.auth.currentUser && state.auth.currentUserId && Array.isArray(state.auth.users)) {
@@ -173,6 +177,7 @@ export function logout() {
     state.auth.currentUserId = "";
     state.auth.apiToken = "";
     state.auth.apiTokenExp = 0;
+    state.auth.tenantId = String(state.settings?.tenantId || "default");
     state.auth.users = [];
     state.auth.roles = [];
     saveState();

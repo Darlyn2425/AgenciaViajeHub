@@ -1,7 +1,7 @@
 import { state } from "../core/state.js";
 
 export function getTenantId() {
-  return String(state.settings?.tenantId || "default").trim() || "default";
+  return String(state.auth?.tenantId || state.settings?.tenantId || "default").trim() || "default";
 }
 
 export function withTenantQuery(path) {

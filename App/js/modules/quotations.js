@@ -18,6 +18,7 @@ window.openQuotationModal = openQuotationModal;
 window.convertQuotationToItinerary = convertQuotationToItinerary;
 
 let quotationPdfBusy = false;
+const quotationPdfPreviewCache = new Map();
 let quotationsApiSyncStarted = false;
 let quotationsApiSyncCompleted = false;
 const API_TIMEOUT_MS = 8000;
@@ -593,8 +594,8 @@ export function openQuotationModal(existing = null) {
           </div>
 
           <div class="grid">
-            <div class="field col-6"><label>Llegada <span class="req">*</span></label><input id="qStart" type="date" value="${escapeHtml(d.startDate || "")}" onchange="calcDates()" /></div>
-            <div class="field col-6"><label>Salida <span class="req">*</span></label><input id="qEnd" type="date" value="${escapeHtml(d.endDate || "")}" onchange="calcDates()" /></div>
+            <div class="field col-6"><label>Llegada <span class="req">*</span></label><input id="qStart" type="date" value="${escapeHtml(d.startDate || "")}" placeholder="YYYY-MM-DD" /></div>
+            <div class="field col-6"><label>Salida <span class="req">*</span></label><input id="qEnd" type="date" value="${escapeHtml(d.endDate || "")}" placeholder="YYYY-MM-DD" /></div>
           </div>
 
           <div class="grid">
@@ -772,11 +773,22 @@ export function openQuotationModal(existing = null) {
       const docDate = gv("qDocDate");
       const selectedStatusId = gv("qStatus");
       const selectedStatus = quotationStatuses.find(st => st.id === selectedStatusId) || defaultStatus || { id: "quo_draft", label: "Borrador" };
-      const startDate = gv("qStart");
-      const endDate = gv("qEnd");
+      const parseFlexibleDate = (raw) => {
+        const v = String(raw || "").trim();
+        if (!v) return null;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+        const m = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+        if (!m) return null;
+        const dd = String(m[1]).padStart(2, "0");
+        const mm = String(m[2]).padStart(2, "0");
+        const yyyy = String(m[3]);
+        return `${yyyy}-${mm}-${dd}`;
+      };
+      const startDate = parseFlexibleDate(gv("qStart"));
+      const endDate = parseFlexibleDate(gv("qEnd"));
       if (!clientInputRaw) { toast("Completa el cliente."); return; }
       if (!destination) { toast("Completa el destino."); return; }
-      if (!startDate || !endDate) { toast("Completa llegada y salida."); return; }
+      if (!startDate || !endDate) { toast("Completa llegada y salida en formato valido (YYYY-MM-DD)."); return; }
 
       // Calc logic logic reuse
       const currency = gv("qCurrency") || "USD";
@@ -1028,6 +1040,8 @@ export function openQuotationModal(existing = null) {
     }
 
     const qEnableItinerary = document.getElementById("qEnableItinerary");
+    const qStart = document.getElementById("qStart");
+    const qEnd = document.getElementById("qEnd");
     const qItineraryWrap = document.getElementById("qItineraryWrap");
     const qItineraryList = document.getElementById("qItineraryList");
     const qAddItineraryDay = document.getElementById("qAddItineraryDay");
@@ -1037,6 +1051,27 @@ export function openQuotationModal(existing = null) {
         qItineraryWrap.style.display = qEnableItinerary.checked ? "" : "none";
       });
     }
+
+    // Date inputs: bind without inline handlers and provide text fallback for non-date browsers.
+    const supportsDateInput = (() => {
+      const test = document.createElement("input");
+      test.setAttribute("type", "date");
+      return test.type === "date";
+    })();
+    const bindDateRecalc = () => {
+      if (typeof window.calcDates === "function") window.calcDates();
+    };
+    [qStart, qEnd].forEach((el) => {
+      if (!el) return;
+      if (!supportsDateInput) {
+        el.type = "text";
+        el.placeholder = "YYYY-MM-DD";
+        el.inputMode = "numeric";
+      }
+      el.addEventListener("change", bindDateRecalc);
+      el.addEventListener("input", bindDateRecalc);
+      el.addEventListener("blur", bindDateRecalc);
+    });
 
     if (qAddItineraryDay && qItineraryList) {
       qAddItineraryDay.addEventListener("click", () => {
@@ -1100,10 +1135,21 @@ export function openQuotationModal(existing = null) {
     const s = document.getElementById("qStart").value;
     const e = document.getElementById("qEnd").value;
     if (!s || !e) return;
-    const parseISODate = (iso) => {
-      const [y, m, d] = iso.split("-").map(Number);
-      if (!y || !m || !d) return null;
-      return { y, m, d };
+    const parseISODate = (raw) => {
+      const v = String(raw || "").trim();
+      if (!v) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        const [y, m, d] = v.split("-").map(Number);
+        if (!y || !m || !d) return null;
+        return { y, m, d };
+      }
+      const m = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (!m) return null;
+      const d = Number(m[1]);
+      const mo = Number(m[2]);
+      const y = Number(m[3]);
+      if (!y || !mo || !d) return null;
+      return { y, m: mo, d };
     };
     const start = parseISODate(s);
     const end = parseISODate(e);
@@ -1271,6 +1317,65 @@ export async function previewQuotationPDF(id) {
   return generateQuotationPDF(id, "preview");
 }
 
+function buildQuotationPreviewCacheKey(q) {
+  const safe = {
+    id: q?.id || "",
+    updatedAt: q?.updatedAt || q?.createdAt || "",
+    destination: q?.destination || "",
+    datesText: q?.datesText || "",
+    total: q?.total || 0,
+    imagesLen: Array.isArray(q?.images) ? q.images.length : 0,
+    itineraryLen: Array.isArray(q?.itineraryDays) ? q.itineraryDays.length : 0,
+    reserveLink: q?.reserveLink || "",
+    company: state.settings?.companyName || "",
+    logo: state.settings?.logoDataUrl || "",
+  };
+  return JSON.stringify(safe);
+}
+
+function setQuotationPreviewCache(id, key, filename, url) {
+  quotationPdfPreviewCache.set(id, { key, filename, url });
+  if (quotationPdfPreviewCache.size > 20) {
+    const first = quotationPdfPreviewCache.keys().next();
+    if (!first.done) quotationPdfPreviewCache.delete(first.value);
+  }
+}
+
+function openQuotationPreviewModal(url, filename) {
+  openModal({
+    title: "Vista previa de cotización",
+    bodyHtml: `
+      <div class="card" style="padding:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+          <div class="kbd">Revisa el documento antes de descargarlo.</div>
+          <button class="btn primary" id="btnPreviewDownload">Descargar PDF</button>
+        </div>
+        <iframe
+          src="${url}"
+          style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;"
+          title="Vista previa PDF de cotización"
+        ></iframe>
+      </div>
+    `,
+    onSave: () => {
+      closeModal();
+    }
+  });
+
+  const btnPreviewDownload = document.getElementById("btnPreviewDownload");
+  if (btnPreviewDownload) {
+    btnPreviewDownload.onclick = () => {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+  }
+}
+
 async function generateQuotationPDF(id, mode = "download") {
   if (quotationPdfBusy) return;
   quotationPdfBusy = true;
@@ -1279,6 +1384,7 @@ async function generateQuotationPDF(id, mode = "download") {
     quotationPdfBusy = false;
     return;
   }
+  const cacheKey = buildQuotationPreviewCacheKey(q);
 
   // Defensive close in case export is triggered from any other entry point.
   closeQuotationMenus();
@@ -1759,6 +1865,15 @@ async function generateQuotationPDF(id, mode = "download") {
   const clientLabel = toFileLabel(q.clientName || q.clientDisplay, "Cliente");
   const destinationLabel = toFileLabel(q.destination, "Destino");
   const filename = `Cotizacion - ${clientLabel} - ${destinationLabel}.pdf`;
+  if (mode === "preview") {
+    const cached = quotationPdfPreviewCache.get(id);
+    if (cached && cached.key === cacheKey && cached.url) {
+      root.innerHTML = "";
+      openQuotationPreviewModal(cached.url, cached.filename || filename);
+      quotationPdfBusy = false;
+      return;
+    }
+  }
 
   try {
     if (!window.jspdf || !window.jspdf.jsPDF || !window.html2canvas) {
@@ -1793,7 +1908,7 @@ async function generateQuotationPDF(id, mode = "download") {
 
     for (let i = 0; i < pages.length; i++) {
       const canvas = await window.html2canvas(pages[i], {
-        scale: 2,
+        scale: mode === "preview" ? 1.5 : 2,
         useCORS: true,
         backgroundColor: "#ffffff",
         scrollX: 0,
@@ -1814,40 +1929,8 @@ async function generateQuotationPDF(id, mode = "download") {
     if (mode === "preview") {
       const blob = doc.output("blob");
       const url = URL.createObjectURL(blob);
-
-      openModal({
-        title: "Vista previa de cotización",
-        bodyHtml: `
-          <div class="card" style="padding:10px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
-              <div class="kbd">Revisa el documento antes de descargarlo.</div>
-              <button class="btn primary" id="btnPreviewDownload">Descargar PDF</button>
-            </div>
-            <iframe
-              src="${url}"
-              style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;"
-              title="Vista previa PDF de cotización"
-            ></iframe>
-          </div>
-        `,
-        onSave: () => {
-          URL.revokeObjectURL(url);
-          closeModal();
-        }
-      });
-
-      const btnPreviewDownload = document.getElementById("btnPreviewDownload");
-      if (btnPreviewDownload) {
-        btnPreviewDownload.onclick = () => {
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = filename;
-          a.rel = "noopener";
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        };
-      }
+      setQuotationPreviewCache(id, cacheKey, filename, url);
+      openQuotationPreviewModal(url, filename);
       toast("Vista previa lista ✅");
     } else {
       forceDownloadPDF();

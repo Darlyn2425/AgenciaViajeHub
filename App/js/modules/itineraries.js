@@ -17,6 +17,7 @@ window.toggleItineraryMenu = toggleItineraryMenu;
 window.runItineraryAction = runItineraryAction;
 
 let itineraryPdfBusy = false;
+const itineraryPdfPreviewCache = new Map();
 const API_TIMEOUT_MS = 8000;
 const ITINERARIES_STALE_MS = 15000;
 let itinerariesApiSyncStarted = false;
@@ -25,6 +26,59 @@ let itinerariesIsLoading = false;
 let itinerariesLastFetchKey = "";
 let itinerariesLastSyncedAt = 0;
 let itinerariesSyncErrorNotified = false;
+
+function buildItineraryPreviewCacheKey(itinerary) {
+    const safe = {
+        id: itinerary?.id || "",
+        updatedAt: itinerary?.updatedAtISO || itinerary?.updatedAt || "",
+        title: itinerary?.title || itinerary?.destination || "",
+        dates: `${itinerary?.startDate || ""}-${itinerary?.endDate || ""}`,
+        days: Array.isArray(itinerary?.days) ? itinerary.days.length : 0,
+        includes: Array.isArray(itinerary?.includes) ? itinerary.includes.length : 0,
+        excludes: Array.isArray(itinerary?.excludes) ? itinerary.excludes.length : 0,
+        terms: Array.isArray(itinerary?.terms) ? itinerary.terms.length : 0,
+        cta: itinerary?.ctaLink || "",
+        logo: state.settings?.logoDataUrl || "",
+        company: state.settings?.companyName || "",
+    };
+    return JSON.stringify(safe);
+}
+
+function setItineraryPreviewCache(id, key, filename, url) {
+    itineraryPdfPreviewCache.set(id, { key, filename, url });
+    if (itineraryPdfPreviewCache.size > 20) {
+        const first = itineraryPdfPreviewCache.keys().next();
+        if (!first.done) itineraryPdfPreviewCache.delete(first.value);
+    }
+}
+
+function openItineraryPreviewModal(url, filename) {
+    openModal({
+        title: "Vista previa de itinerario",
+        bodyHtml: `
+          <div class="card" style="padding:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+              <div class="kbd">Revisa el documento antes de descargarlo.</div>
+              <button class="btn primary" id="btnPreviewItiDownload">Descargar PDF</button>
+            </div>
+            <iframe src="${url}" style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;" title="Vista previa PDF de itinerario"></iframe>
+          </div>
+        `,
+        onSave: () => {
+            closeModal();
+        }
+    });
+
+    const btn = document.getElementById("btnPreviewItiDownload");
+    if (btn) {
+        btn.onclick = () => {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            a.click();
+        };
+    }
+}
 
 function getConfiguredItineraryStatuses() {
     const itineraryList = state.settings?.modules?.itineraries?.statuses || [];
@@ -1335,6 +1389,16 @@ async function generateItineraryPDF(id, mode = "download") {
     const clientLabel = toFileLabel(itinerary.clientName || itinerary.clientDisplay, "Cliente");
     const destinationLabel = toFileLabel(itinerary.destination || itinerary.title || tripName, "Destino");
     const filename = `Itinerario - ${clientLabel} - ${destinationLabel}.pdf`;
+    const cacheKey = buildItineraryPreviewCacheKey(itinerary);
+    if (mode === "preview") {
+        const cached = itineraryPdfPreviewCache.get(id);
+        if (cached && cached.key === cacheKey && cached.url) {
+            root.innerHTML = "";
+            openItineraryPreviewModal(cached.url, cached.filename || filename);
+            itineraryPdfBusy = false;
+            return;
+        }
+    }
 
     try {
         if (!window.jspdf || !window.jspdf.jsPDF || !window.html2canvas) {
@@ -1364,7 +1428,7 @@ async function generateItineraryPDF(id, mode = "download") {
 
         for (let i = 0; i < pageEls.length; i++) {
             const canvas = await window.html2canvas(pageEls[i], {
-                scale: 2,
+                scale: mode === "preview" ? 1.5 : 2,
                 useCORS: true,
                 backgroundColor: "#ffffff",
                 scrollX: 0,
@@ -1382,32 +1446,8 @@ async function generateItineraryPDF(id, mode = "download") {
         if (mode === "preview") {
             const blob = doc.output("blob");
             const url = URL.createObjectURL(blob);
-            openModal({
-                title: "Vista previa de itinerario",
-                bodyHtml: `
-                  <div class="card" style="padding:10px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
-                      <div class="kbd">Revisa el documento antes de descargarlo.</div>
-                      <button class="btn primary" id="btnPreviewItiDownload">Descargar PDF</button>
-                    </div>
-                    <iframe src="${url}" style="width:100%; height:70vh; border:1px solid rgba(255,255,255,.12); border-radius:12px; background:#fff;" title="Vista previa PDF de itinerario"></iframe>
-                  </div>
-                `,
-                onSave: () => {
-                    URL.revokeObjectURL(url);
-                    closeModal();
-                }
-            });
-
-            const btn = document.getElementById("btnPreviewItiDownload");
-            if (btn) {
-                btn.onclick = () => {
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = filename;
-                    a.click();
-                };
-            }
+            setItineraryPreviewCache(id, cacheKey, filename, url);
+            openItineraryPreviewModal(url, filename);
         } else {
             doc.save(filename);
         }
